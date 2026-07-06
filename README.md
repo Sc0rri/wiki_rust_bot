@@ -1,0 +1,1 @@
+# wiki_rust_bot
