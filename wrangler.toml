@@ -1,0 +1,24 @@
+name = "wiki-rust-bot"
+main = "build/index.js"
+compatibility_date = "2026-05-17"
+
+[build]
+command = "cargo install -q \"worker-build@^0.8\" && worker-build --release"
+
+[[kv_namespaces]]
+binding = "STATE_STORE"
+id = "9ca274fd5d074a63adc1e405ba90d065"
+
+[[kv_namespaces]]
+binding = "DEDUP_STORE"
+id = "9ca274fd5d074a63adc1e405ba90d065"
+
+[[queues]]
+binding = "WIKI_QUEUE"
+queue_name = "wiki-inbox-queue"
+
+[ai]
+binding = "AI"
+
+[observability]
+enabled = false
