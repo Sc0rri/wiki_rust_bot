@@ -148,7 +148,6 @@ pub enum TextTransition {
     SetComment(String),
     Confirm,
     ProcessFresh,
-    Expired,
 }
 
 impl KnowledgeType {

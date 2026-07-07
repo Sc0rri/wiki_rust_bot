@@ -3,6 +3,7 @@ use crate::dedup::DedupService;
 use crate::detector::Detector;
 use crate::github::GitHubService;
 use crate::parser::ParserService;
+use crate::resolver::Resolver;
 use crate::state::{ContentStatus, KnowledgeType, PendingItem, TextTransition, UserState};
 use crate::telegram::{TelegramService, Update};
 use crate::{get_env_or_secret, log_event};
@@ -175,6 +176,32 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
                 item.tags.push(format!("file:{}", fid));
             }
 
+            // Enrich GitHub repos with real metadata (stars/language/topics) via API
+            // instead of relying on the URL-guessed title.
+            if kt == KnowledgeType::GithubRepo {
+                if let Some(ref url) = item.url {
+                    if let Some(owner_repo) = Resolver::parse_github_url(url) {
+                        match Resolver::resolve_github(&env, &owner_repo).await {
+                            Ok(Some(resolved)) => {
+                                item.title = resolved.title;
+                                item.description = resolved.description.or(item.description);
+                                item.language = resolved.language;
+                                item.stars = resolved.stars;
+                                if !resolved.tags.is_empty() {
+                                    item.tags.extend(resolved.tags);
+                                }
+                            }
+                            Ok(None) => {
+                                log_event!("warn", "resolver.github.not_found", "repo={}", owner_repo);
+                            }
+                            Err(e) => {
+                                log_event!("error", "resolver.github.failed", "error={:?}", e);
+                            }
+                        }
+                    }
+                }
+            }
+
             if kt.has_status_options() {
                 let status_kb = TelegramService::status_keyboard(&kt);
                 let state = UserState::AwaitingStatus { item };
@@ -230,9 +257,6 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
         TextTransition::ProcessFresh => {
             delete_state(&kv, &state_key, chat_id).await?;
             process_fresh(env, &bot_token, &dedup_kv, chat_id, &text).await?;
-        }
-        TextTransition::Expired => {
-            TelegramService::send_message(&bot_token, chat_id, "⏰ Draft expired. Please start over.", Some(TelegramService::remove_keyboard())).await?;
         }
     }
 
