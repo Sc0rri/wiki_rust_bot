@@ -1,6 +1,6 @@
 # 🤖 Wiki LLM Bot
 
-A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send links or titles via Telegram — the bot detects the source, lets you choose type/status/category/rating/comment, and saves YAML-frontmatter markdown files to a GitHub repository for later processing by Hermes.
+A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send links or titles via Telegram — the bot detects the source, lets you choose type/status/rating/comment, and saves YAML files to a GitHub repository for later processing by Hermes.
 
 ## ✨ Features
 
@@ -8,9 +8,8 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 - **🔗 Smart detection**: URL provider detection (GitHub, YouTube, Goodreads, arXiv, etc.) without AI
 - **🎯 Granular statuses**: To-read/Read, To-watch/Watched, Planned/In progress/Finished, Dropped, Using/Library/Interesting
 - **⭐ Rating & comments**: Rate 1-10 and add comments for consumed content
-- **📂 Categories**: Programming, News, Education, Gaming, etc. (for articles)
 - **🤖 AI-powered analysis**: Cloudflare Workers AI for text-only inputs (optional)
-- **💾 GitHub integration**: Saves to `<repository>/inbox/pending/`
+- **💾 GitHub integration**: Saves to `<repository>/inbox/pending/` as flat YAML files
 - **🖼️ Media support**: Handles photo and PDF uploads
 - **🔍 Deduplication**: Prevents duplicate entries via KV store
 - **⌨️ Button-based UI**: All interactions via Telegram reply keyboards
@@ -128,7 +127,7 @@ Bot: 🛠 tokio
      [✅ Save] [❌ Cancel]
 
 User: ✅ Save
-Bot: ✅ Saved: inbox/pending/tool/using/2026-07-07_tokio.md
+Bot: ✅ Saved: inbox/pending/2026-07-07_tokio.yaml
 ```
 
 ### Send a title (text input)
@@ -159,7 +158,7 @@ Bot: 📚 Clean Architecture
      [✅ Save] [❌ Cancel]
 
 User: ✅ Save
-Bot: ✅ Saved: inbox/pending/book/to-read/2026-07-07_clean-architecture.md
+Bot: ✅ Saved: inbox/pending/2026-07-07_clean-architecture.yaml
 ```
 
 ### Send a YouTube link
@@ -188,9 +187,9 @@ Bot: 🖼 Image received
      ...
 ```
 
-## 📁 Saved File Format (YAML + Markdown)
+## 📁 Saved File Format (YAML)
 
-Each item is saved as a markdown file under `inbox/pending/` with rich YAML frontmatter:
+Each item is saved as a flat YAML file under `inbox/pending/` with the filename format `YYYY-MM-DD_slug.yaml`:
 
 ```yaml
 ---
@@ -203,6 +202,7 @@ type: book
 status: to-read
 title: "Clean Architecture"
 author: "Robert C. Martin"
+language: rust
 year: 2017
 rating: 8
 comment: "Great book on software architecture"
@@ -230,41 +230,6 @@ processed: false
 | 💡 Idea | Confirm/save directly |
 | 📝 Note | Confirm/save directly |
 | 📋 Other | Saved directly |
-
-### Categories
-
-**PDFs**: Programming, Research, Book, Manual  
-**Images**: Book cover, Notes, Diagram, Document
-
-## 📁 Inbox Structure
-
-```
-inbox/pending/
-├── book/to-read/
-├── book/read/
-├── book/dropped/
-├── movie/to-watch/
-├── movie/watched/
-├── series/to-watch/
-├── series/watched/
-├── anime/to-watch/
-├── anime/watched/
-├── course/planned/
-├── course/in-progress/
-├── course/finished/
-├── paper/
-├── github_repo/using/
-├── github_repo/library/
-├── github_repo/interesting/
-├── youtube_video/to-watch/
-├── youtube_video/watched/
-├── tool/using/
-├── tool/library/
-├── tool/interesting/
-├── article/inbox/
-├── article/important/
-└── ...
-```
 
 ## 🔒 Security
 

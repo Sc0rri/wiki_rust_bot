@@ -13,11 +13,10 @@ impl GitHubService {
         let token = env.secret("GITHUB_TOKEN")?.to_string();
         let repo = get_env_or_secret(env, "GITHUB_REPO", "Sc0rri/wiki");
         
-        let status = item.status.label().to_lowercase();
-        let filename = ParserService::generate_filename(&item.title, &item.knowledge_type, &status);
+        let filename = ParserService::generate_filename(item);
         let path = format!("inbox/pending/{}", filename);
         
-        let content = Self::generate_markdown(item);
+        let content = Self::generate_yaml(item);
         let content_base64 = base64::encode(&content);
 
         let url = format!(
@@ -69,67 +68,64 @@ impl GitHubService {
         Ok(path)
     }
 
-    fn generate_markdown(item: &PendingItem) -> String {
-        let mut md = String::new();
+    fn generate_yaml(item: &PendingItem) -> String {
+        let mut yaml = String::new();
 
-        md.push_str("---\n");
-        md.push_str(&format!("id: {}\n", item.id));
-        md.push_str(&format!("created: {}\n", item.created));
-        md.push_str(&format!("source: {}\n", item.source));
-        md.push_str(&format!("provider: {}\n", item.provider.label().to_lowercase()));
+        yaml.push_str("---\n");
+        yaml.push_str(&format!("id: {}\n", item.id));
+        yaml.push_str(&format!("created: {}\n", item.created));
+        yaml.push_str(&format!("source: {}\n", item.source));
+        yaml.push_str(&format!("provider: {}\n", item.provider.label().to_lowercase()));
         
         if let Some(ref url) = item.url {
-            md.push_str(&format!("url: \"{}\"\n", url));
+            yaml.push_str(&format!("url: \"{}\"\n", url));
         }
         
-        md.push_str(&format!("type: {}\n", item.knowledge_type.label().to_lowercase()));
-        md.push_str(&format!("status: {}\n", item.status.label().to_lowercase()));
-        md.push_str(&format!("title: \"{}\"\n", item.title.replace('"', "\\\"")));
+        yaml.push_str(&format!("type: {}\n", item.knowledge_type.label().to_lowercase()));
+        yaml.push_str(&format!("status: {}\n", item.status.label().to_lowercase()));
+        yaml.push_str(&format!("title: \"{}\"\n", item.title.replace('"', "\\\"")));
         
         if let Some(ref author) = item.author {
-            md.push_str(&format!("author: \"{}\"\n", author.replace('"', "\\\"")));
+            yaml.push_str(&format!("author: \"{}\"\n", author.replace('"', "\\\"")));
         }
         
         if let Some(ref language) = item.language {
-            md.push_str(&format!("language: {}\n", language));
+            yaml.push_str(&format!("language: {}\n", language));
         }
         
         if let Some(ref category) = item.category {
-            md.push_str(&format!("category: \"{}\"\n", category.replace('"', "\\\"")));
+            yaml.push_str(&format!("category: \"{}\"\n", category.replace('"', "\\\"")));
         }
         
         if let Some(year) = item.year {
-            md.push_str(&format!("year: {}\n", year));
+            yaml.push_str(&format!("year: {}\n", year));
         }
         
         if let Some(stars) = item.stars {
-            md.push_str(&format!("stars: {}\n", stars));
+            yaml.push_str(&format!("stars: {}\n", stars));
         }
         
         if let Some(rating) = item.rating {
-            md.push_str(&format!("rating: {}\n", rating));
+            yaml.push_str(&format!("rating: {}\n", rating));
         }
         
         if let Some(ref comment) = item.comment {
-            md.push_str(&format!("comment: \"{}\"\n", comment.replace('"', "\\\"")));
+            yaml.push_str(&format!("comment: \"{}\"\n", comment.replace('"', "\\\"")));
         }
         
         if !item.tags.is_empty() {
-            md.push_str("tags:\n");
+            yaml.push_str("tags:\n");
             for tag in &item.tags {
-                md.push_str(&format!("  - \"{}\"\n", tag));
+                yaml.push_str(&format!("  - \"{}\"\n", tag));
             }
+        } else {
+            yaml.push_str("tags: []\n");
         }
         
-        md.push_str(&format!("processed: {}\n", item.processed));
-        md.push_str("---\n\n");
+        yaml.push_str(&format!("processed: {}\n", item.processed));
+        yaml.push_str("---\n");
 
-        if let Some(ref desc) = item.description {
-            md.push_str(desc);
-            md.push('\n');
-        }
-
-        md
+        yaml
     }
 }
 
@@ -138,29 +134,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generate_markdown_should_create_valid_frontmatter() {
+    fn generate_yaml_should_create_valid_frontmatter() {
         let mut item = PendingItem::new("Test Article".to_string(), KnowledgeType::Article);
-        item.category = Some("Programming".to_string());
         item.author = Some("Test Author".to_string());
         item.year = Some(2024);
         item.status = ContentStatus::ToRead;
         item.provider = ResourceProvider::Web;
         item.tags = vec!["rust".to_string(), "wasm".to_string()];
 
-        let md = GitHubService::generate_markdown(&item);
+        let yaml = GitHubService::generate_yaml(&item);
         
-        assert!(md.contains("type: article"));
-        assert!(md.contains("title: \"Test Article\""));
-        assert!(md.contains("category: \"Programming\""));
-        assert!(md.contains("author: \"Test Author\""));
-        assert!(md.contains("year: 2024"));
-        assert!(md.contains("status: to-read"));
-        assert!(md.contains("source: telegram"));
-        assert!(md.contains("provider: web"));
-        assert!(md.contains("tags:"));
-        assert!(md.contains("- \"rust\""));
-        assert!(md.contains("processed: false"));
-        assert!(md.contains("id: "));
-        assert!(md.contains("created: "));
+        assert!(yaml.contains("type: article"));
+        assert!(yaml.contains("title: \"Test Article\""));
+        assert!(yaml.contains("author: \"Test Author\""));
+        assert!(yaml.contains("year: 2024"));
+        assert!(yaml.contains("status: to-read"));
+        assert!(yaml.contains("source: telegram"));
+        assert!(yaml.contains("provider: web"));
+        assert!(yaml.contains("tags:"));
+        assert!(yaml.contains("- \"rust\""));
+        assert!(yaml.contains("processed: false"));
+        assert!(yaml.contains("id: "));
+        assert!(yaml.contains("created: "));
+        assert!(yaml.ends_with("---\n"));
+    }
+
+    #[test]
+    fn generate_yaml_should_have_empty_tags_array() {
+        let item = PendingItem::new("No Tags".to_string(), KnowledgeType::Book);
+        let yaml = GitHubService::generate_yaml(&item);
+        assert!(yaml.contains("tags: []\n"));
     }
 }

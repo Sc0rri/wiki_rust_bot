@@ -1,4 +1,4 @@
-use crate::state::KnowledgeType;
+use crate::state::PendingItem;
 
 pub struct ParserService;
 
@@ -18,16 +18,17 @@ impl ParserService {
             .join("-")
     }
 
-    pub fn generate_filename(title: &str, knowledge_type: &KnowledgeType, status: &str) -> String {
+    pub fn generate_filename(item: &PendingItem) -> String {
         let now = chrono::Utc::now().format("%Y-%m-%d");
-        let slug = Self::slugify(title);
-        format!("{}/{}/{}_{}.md", knowledge_type.label().to_lowercase(), status, now, slug)
+        let slug = Self::slugify(&item.title);
+        format!("{}_{}.yaml", now, slug)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::{KnowledgeType, PendingItem};
 
     #[test]
     fn is_url_should_detect_https() {
@@ -51,13 +52,11 @@ mod tests {
     }
 
     #[test]
-    fn generate_filename_should_create_correct_path() {
-        let result = ParserService::generate_filename(
-            "Lord of the Rings",
-            &KnowledgeType::Book,
-            "to-read"
-        );
-        assert!(result.starts_with("book/to-read/"));
-        assert!(result.ends_with(".md"));
+    fn generate_filename_should_create_flat_yaml() {
+        let item = PendingItem::new("Lord of the Rings".to_string(), KnowledgeType::Book);
+        let result = ParserService::generate_filename(&item);
+        assert!(result.ends_with(".yaml"));
+        assert!(!result.contains('/'));
+        assert!(result.contains("lord-of-the-rings"));
     }
 }
