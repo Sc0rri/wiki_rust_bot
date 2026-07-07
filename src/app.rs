@@ -1,3 +1,4 @@
+use crate::ai::AiService;
 use crate::dedup::DedupService;
 use crate::detector::Detector;
 use crate::github::GitHubService;
@@ -7,7 +8,7 @@ use crate::telegram::{TelegramService, Update};
 use crate::{get_env_or_secret, log_event};
 use worker::*;
 
-const STATE_TTL_SECONDS: u64 = 600;
+const STATE_TTL_SECONDS: u64 = 1800; // 30 minutes
 
 pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result<()> {
     let update: Update = match serde_json::from_str(&update_raw) {
@@ -34,9 +35,11 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
 
         if let Some(photos) = &msg.photo {
             if !photos.is_empty() {
+                // Take the largest photo (last in array)
+                let file_id = photos.last().map(|p| p.file_id.clone()).unwrap_or_default();
                 let env_clone = env.clone();
                 ctx.wait_until(async move {
-                    if let Err(e) = handle_media(env_clone, chat_id, "image").await {
+                    if let Err(e) = handle_media(env_clone, chat_id, "image", &file_id).await {
                         log_event!("error", "telegram.photo.failed", "error={:?}", e);
                     }
                 });
@@ -48,8 +51,9 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
             let env_clone = env.clone();
             ctx.wait_until(async move {
                 let file_name = doc.file_name.unwrap_or_default();
+                let file_id = doc.file_id.clone();
                 if file_name.to_lowercase().ends_with(".pdf") {
-                    if let Err(e) = handle_media(env_clone, chat_id, "pdf").await {
+                    if let Err(e) = handle_media(env_clone, chat_id, "pdf", &file_id).await {
                         log_event!("error", "telegram.pdf.failed", "error={:?}", e);
                     }
                 }
@@ -78,7 +82,7 @@ fn username_is_allowed(username: Option<&String>, allowed: &str) -> bool {
     username.map(|u| u.as_str()).unwrap_or_default() == allowed
 }
 
-async fn handle_media(env: Env, chat_id: i64, media_type: &str) -> Result<()> {
+async fn handle_media(env: Env, chat_id: i64, media_type: &str, file_id: &str) -> Result<()> {
     let bot_token = env.secret("BOT_TOKEN")?.to_string();
     let text = match media_type {
         "image" => "🖼 Image received\n\nWhat type?",
@@ -87,7 +91,12 @@ async fn handle_media(env: Env, chat_id: i64, media_type: &str) -> Result<()> {
     };
     TelegramService::send_message(&bot_token, chat_id, text, Some(TelegramService::type_keyboard())).await?;
     let kv = env.kv("STATE_STORE")?;
-    let state = UserState::AwaitingType { raw_text: media_type.to_string(), detected: None };
+    // Store file_id so we know which file was referenced
+    let state = UserState::AwaitingType {
+        raw_text: media_type.to_string(),
+        detected: None,
+        media_file_id: Some(file_id.to_string()),
+    };
     save_state(&kv, &format!("{}_state", chat_id), &state).await?;
     Ok(())
 }
@@ -99,6 +108,24 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
     let state_key = format!("{}_state", chat_id);
 
     let state = load_state(&kv, &state_key).await?;
+
+    // Issue 6: State expired (KV TTL) → notify user, don't silently reinterpret
+    if state == UserState::None && !text.starts_with("http") && !text.is_empty() {
+        // Check if there was a state but it expired — we can't know for sure,
+        // but if user sends something that looks like a rating/comment mid-flow,
+        // we should warn. Simplest: if no state and input is numeric (likely a rating),
+        // tell user the draft expired.
+        if text.parse::<u8>().is_ok() {
+            TelegramService::send_message(
+                &bot_token,
+                chat_id,
+                "⏰ Your previous draft expired (30 min timeout). Please start over.",
+                Some(TelegramService::remove_keyboard()),
+            ).await?;
+            return Ok(());
+        }
+    }
+
     let transition = state.text_transition(&text);
 
     if transition == TextTransition::Cancel {
@@ -118,31 +145,43 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
                 UserState::AwaitingType { detected, .. } => detected.clone(),
                 _ => None,
             };
-            let mut item = PendingItem::new(raw_text, kt.clone());
-            item.source = "telegram".to_string();
-            if let Some(d) = detected { item.provider = d.provider; item.url = Some(d.url); item.description = d.description; }
+            let media_file_id = match &state {
+                UserState::AwaitingType { media_file_id, .. } => media_file_id.clone(),
+                _ => None,
+            };
 
-            if kt.has_categories() {
-                let state = UserState::AwaitingCategory { item };
-                save_state(&kv, &state_key, &state).await?;
-                TelegramService::send_message(&bot_token, chat_id, "📄 Category?", Some(category_keyboard())).await?;
-            } else if kt.has_status_options() {
+            // Issue 4: Use detected.title as the item title, not the raw URL
+            let title = if let Some(ref d) = detected {
+                if let Some(ref t) = d.title {
+                    t.clone()
+                } else if ParserService::is_url(&raw_text) {
+                    // URL with no guessable title → use domain-based fallback
+                    format!("{} link", d.provider.label())
+                } else {
+                    raw_text.clone()
+                }
+            } else {
+                raw_text.clone()
+            };
+
+            let mut item = PendingItem::new(title, kt.clone());
+            item.source = "telegram".to_string();
+            if let Some(d) = detected {
+                item.provider = d.provider;
+                item.url = Some(d.url);
+                item.description = d.description;
+            }
+            if let Some(fid) = media_file_id {
+                item.tags.push(format!("file:{}", fid));
+            }
+
+            if kt.has_status_options() {
                 let status_kb = TelegramService::status_keyboard(&kt);
                 let state = UserState::AwaitingStatus { item };
                 save_state(&kv, &state_key, &state).await?;
                 TelegramService::send_message(&bot_token, chat_id, &format!("{} Status?", kt.emoji()), Some(status_kb)).await?;
             } else {
                 save_and_finish(env, &bot_token, &dedup_kv, chat_id, item).await?;
-            }
-        }
-        TextTransition::SelectCategory(category) => {
-            if let UserState::AwaitingCategory { mut item } = state {
-                item.category = Some(category);
-                let kt = item.knowledge_type.clone();
-                let status_kb = TelegramService::status_keyboard(&kt);
-                let state = UserState::AwaitingStatus { item };
-                save_state(&kv, &state_key, &state).await?;
-                TelegramService::send_message(&bot_token, chat_id, &format!("{} Status?", kt.emoji()), Some(status_kb)).await?;
             }
         }
         TextTransition::SelectStatus(status) => {
@@ -192,6 +231,9 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
             delete_state(&kv, &state_key, chat_id).await?;
             process_fresh(env, &bot_token, &dedup_kv, chat_id, &text).await?;
         }
+        TextTransition::Expired => {
+            TelegramService::send_message(&bot_token, chat_id, "⏰ Draft expired. Please start over.", Some(TelegramService::remove_keyboard())).await?;
+        }
     }
 
     Ok(())
@@ -202,13 +244,41 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
         let detected = Detector::detect(text);
         TelegramService::send_message(bot_token, chat_id, &detected.preview_text(), Some(TelegramService::type_keyboard())).await?;
         let kv = env.kv("STATE_STORE")?;
-        let state = UserState::AwaitingType { raw_text: text.to_string(), detected: Some(detected) };
+        let state = UserState::AwaitingType {
+            raw_text: text.to_string(),
+            detected: Some(detected),
+            media_file_id: None,
+        };
         save_state(&kv, &format!("{}_state", chat_id), &state).await?;
     } else {
-        TelegramService::send_message(bot_token, chat_id, "Detected title.\n\nWhat type?", Some(TelegramService::type_keyboard())).await?;
-        let kv = env.kv("STATE_STORE")?;
-        let state = UserState::AwaitingType { raw_text: text.to_string(), detected: None };
-        save_state(&kv, &format!("{}_state", chat_id), &state).await?;
+        // Issue 2: Use AI to analyze text-only input
+        match AiService::analyze_content(&env, text).await {
+            Ok(Some(mut item)) => {
+                item.source = "telegram".to_string();
+                let kt = item.knowledge_type.clone();
+                let state_kv = env.kv("STATE_STORE")?;
+                if kt.has_status_options() {
+                    let status_kb = TelegramService::status_keyboard(&kt);
+                    let state = UserState::AwaitingStatus { item };
+                    save_state(&state_kv, &format!("{}_state", chat_id), &state).await?;
+                    TelegramService::send_message(bot_token, chat_id, &format!("{} Status?", kt.emoji()), Some(status_kb)).await?;
+                } else {
+                    let dedup_kv = env.kv("DEDUP_STORE")?;
+                    save_and_finish(env.clone(), bot_token, &dedup_kv, chat_id, item).await?;
+                }
+            }
+            _ => {
+                // Fallback: ask user to pick type
+                TelegramService::send_message(bot_token, chat_id, "Detected title.\n\nWhat type?", Some(TelegramService::type_keyboard())).await?;
+                let kv = env.kv("STATE_STORE")?;
+                let state = UserState::AwaitingType {
+                    raw_text: text.to_string(),
+                    detected: None,
+                    media_file_id: None,
+                };
+                save_state(&kv, &format!("{}_state", chat_id), &state).await?;
+            }
+        }
     }
     Ok(())
 }
@@ -244,18 +314,6 @@ fn build_preview(item: &PendingItem) -> String {
     preview
 }
 
-fn category_keyboard() -> serde_json::Value {
-    serde_json::json!({
-        "keyboard": [
-            [{"text": "💻 Programming"}, {"text": "📰 News"}],
-            [{"text": "🧠 Concept"}, {"text": "📚 Education"}],
-            [{"text": "🎮 Gaming"}, {"text": "🎬 Entertainment"}],
-            [{"text": "📋 Other"}, {"text": "❌ Cancel"}]
-        ],
-        "one_time_keyboard": true, "resize_keyboard": true
-    })
-}
-
 async fn load_state(kv: &worker::kv::KvStore, state_key: &str) -> Result<UserState> {
     let Some(s) = kv.get(state_key).text().await? else { return Ok(UserState::None); };
     Ok(UserState::parse_or_none(&s))
@@ -276,7 +334,6 @@ fn state_name(state: &UserState) -> &'static str {
     match state {
         UserState::None => "none",
         UserState::AwaitingType { .. } => "awaiting_type",
-        UserState::AwaitingCategory { .. } => "awaiting_category",
         UserState::AwaitingStatus { .. } => "awaiting_status",
         UserState::AwaitingRating { .. } => "awaiting_rating",
         UserState::AwaitingComment { .. } => "awaiting_comment",
@@ -292,7 +349,7 @@ mod tests {
     fn state_name_should_return_correct_names() {
         assert_eq!(state_name(&UserState::None), "none");
         assert_eq!(
-            state_name(&UserState::AwaitingType { raw_text: "test".to_string(), detected: None }),
+            state_name(&UserState::AwaitingType { raw_text: "test".to_string(), detected: None, media_file_id: None }),
             "awaiting_type"
         );
     }

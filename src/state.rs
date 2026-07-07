@@ -84,7 +84,6 @@ pub struct PendingItem {
     pub title: String,
     pub author: Option<String>,
     pub language: Option<String>,
-    pub category: Option<String>,
     pub year: Option<i32>,
     pub stars: Option<i32>,
     pub rating: Option<u8>,
@@ -108,7 +107,6 @@ impl PendingItem {
             title,
             author: None,
             language: None,
-            category: None,
             year: None,
             stars: None,
             rating: None,
@@ -127,9 +125,7 @@ pub enum UserState {
     AwaitingType {
         raw_text: String,
         detected: Option<DetectedResource>,
-    },
-    AwaitingCategory {
-        item: PendingItem,
+        media_file_id: Option<String>,
     },
     AwaitingStatus {
         item: PendingItem,
@@ -149,12 +145,12 @@ pub enum UserState {
 pub enum TextTransition {
     Cancel,
     SelectType(KnowledgeType),
-    SelectCategory(String),
     SelectStatus(ContentStatus),
     SetRating(u8),
     SetComment(String),
     Confirm,
     ProcessFresh,
+    Expired,
 }
 
 impl KnowledgeType {
@@ -192,10 +188,6 @@ impl KnowledgeType {
             Self::Note => "Note",
             Self::Other => "Other",
         }
-    }
-
-    pub fn has_categories(&self) -> bool {
-        false
     }
 
     pub fn has_status_options(&self) -> bool {
@@ -291,9 +283,6 @@ impl UserState {
                 } else {
                     TextTransition::SelectType(KnowledgeType::Other)
                 }
-            }
-            Self::AwaitingCategory { .. } => {
-                TextTransition::SelectCategory(text.to_string())
             }
             Self::AwaitingStatus { .. } => {
                 if lower.contains("to-read") || lower.contains("to-watch") || lower.contains("planned") || lower.contains("отложен") {

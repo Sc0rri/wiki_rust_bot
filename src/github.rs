@@ -93,10 +93,6 @@ impl GitHubService {
             yaml.push_str(&format!("language: {}\n", language));
         }
         
-        if let Some(ref category) = item.category {
-            yaml.push_str(&format!("category: \"{}\"\n", category.replace('"', "\\\"")));
-        }
-        
         if let Some(year) = item.year {
             yaml.push_str(&format!("year: {}\n", year));
         }

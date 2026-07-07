@@ -104,11 +104,9 @@ If you cannot determine the type, respond with: {{"type": "other", "title": "{}"
 
         let author = parsed.get("author").and_then(|v| v.as_str()).map(|s| s.to_string());
         let year = parsed.get("year").and_then(|v| v.as_i64()).map(|y| y as i32);
-        let category = parsed.get("category").and_then(|v| v.as_str()).map(|s| s.to_string());
         let description = parsed.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
 
         let mut item = PendingItem::new(title, knowledge_type);
-        item.category = category;
         item.author = author;
         item.year = year;
         item.description = description;
