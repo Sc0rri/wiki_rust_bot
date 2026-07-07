@@ -5,10 +5,32 @@ pub struct PendingItem {
     pub title: String,
     pub content_type: ContentType,
     pub status: ContentStatus,
+    pub category: Option<String>,
     pub url: Option<String>,
     pub author: Option<String>,
     pub year: Option<i32>,
     pub description: Option<String>,
+    pub tags: Vec<String>,
+    pub source: String,
+    pub processed: bool,
+}
+
+impl PendingItem {
+    pub fn new(title: String, content_type: ContentType) -> Self {
+        Self {
+            title,
+            content_type,
+            status: ContentStatus::ToRead,
+            category: None,
+            url: None,
+            author: None,
+            year: None,
+            description: None,
+            tags: Vec::new(),
+            source: String::new(),
+            processed: false,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -18,14 +40,31 @@ pub enum ContentType {
     Movie,
     Series,
     Anime,
+    Article,
+    Course,
+    Paper,
+    Tool,
+    Pdf,
+    Image,
+    Idea,
+    Note,
     Other,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ContentStatus {
-    Done,
-    Pending,
+    ToRead,
+    Read,
+    ToWatch,
+    Watched,
+    Planned,
+    InProgress,
+    Finished,
+    Dropped,
+    Using,
+    Library,
+    Interesting,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -33,7 +72,8 @@ pub enum ContentStatus {
 pub enum UserState {
     None,
     AwaitingType { raw_text: String },
-    AwaitingStatus { title: String, content_type: ContentType },
+    AwaitingCategory { title: String, content_type: ContentType },
+    AwaitingStatus { item: PendingItem },
     AwaitingDetails { item: PendingItem },
     AwaitingConfirmation { item: PendingItem },
 }
@@ -42,6 +82,7 @@ pub enum UserState {
 pub enum TextTransition {
     Cancel,
     SelectType(ContentType),
+    SelectCategory(String),
     SelectStatus(ContentStatus),
     UpdateDetails { field: String, value: String },
     Confirm,
@@ -49,22 +90,20 @@ pub enum TextTransition {
 }
 
 impl ContentType {
-    pub fn folder(&self) -> &'static str {
-        match self {
-            Self::Book => "books",
-            Self::Movie => "movies",
-            Self::Series => "series",
-            Self::Anime => "anime",
-            Self::Other => "watchlist",
-        }
-    }
-
     pub fn emoji(&self) -> &'static str {
         match self {
             Self::Book => "📚",
             Self::Movie => "🎬",
             Self::Series => "📺",
             Self::Anime => "🎌",
+            Self::Article => "📄",
+            Self::Course => "🎓",
+            Self::Paper => "📑",
+            Self::Tool => "🛠",
+            Self::Pdf => "📕",
+            Self::Image => "🖼",
+            Self::Idea => "💡",
+            Self::Note => "📝",
             Self::Other => "📋",
         }
     }
@@ -75,24 +114,46 @@ impl ContentType {
             Self::Movie => "Movie",
             Self::Series => "Series",
             Self::Anime => "Anime",
+            Self::Article => "Article",
+            Self::Course => "Course",
+            Self::Paper => "Paper",
+            Self::Tool => "Tool",
+            Self::Pdf => "PDF",
+            Self::Image => "Image",
+            Self::Idea => "Idea",
+            Self::Note => "Note",
             Self::Other => "Other",
         }
+    }
+
+    pub fn has_categories(&self) -> bool {
+        matches!(self, Self::Article | Self::Pdf | Self::Image)
+    }
+
+    pub fn has_status_options(&self) -> bool {
+        matches!(self, Self::Book | Self::Movie | Self::Series | Self::Anime | Self::Course | Self::Tool)
     }
 }
 
 impl ContentStatus {
-    pub fn folder(&self) -> &'static str {
+    pub fn label(&self) -> &'static str {
         match self {
-            Self::Done => "read",
-            Self::Pending => "to-read",
+            Self::ToRead => "To-read",
+            Self::Read => "Read",
+            Self::ToWatch => "To-watch",
+            Self::Watched => "Watched",
+            Self::Planned => "Planned",
+            Self::InProgress => "In progress",
+            Self::Finished => "Finished",
+            Self::Dropped => "Dropped",
+            Self::Using => "Using",
+            Self::Library => "Library",
+            Self::Interesting => "Interesting",
         }
     }
 
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Done => "Done",
-            Self::Pending => "To-read",
-        }
+    pub fn is_done(&self) -> bool {
+        matches!(self, Self::Read | Self::Watched | Self::Finished | Self::Dropped)
     }
 }
 
@@ -118,15 +179,42 @@ impl UserState {
                     TextTransition::SelectType(ContentType::Series)
                 } else if lower.contains("anime") || lower.contains("аним") {
                     TextTransition::SelectType(ContentType::Anime)
+                } else if lower.contains("article") || lower.contains("статья") {
+                    TextTransition::SelectType(ContentType::Article)
+                } else if lower.contains("course") || lower.contains("курс") {
+                    TextTransition::SelectType(ContentType::Course)
+                } else if lower.contains("paper") {
+                    TextTransition::SelectType(ContentType::Paper)
+                } else if lower.contains("tool") || lower.contains("инструмент") {
+                    TextTransition::SelectType(ContentType::Tool)
+                } else if lower.contains("pdf") {
+                    TextTransition::SelectType(ContentType::Pdf)
+                } else if lower.contains("image") || lower.contains("изображен") {
+                    TextTransition::SelectType(ContentType::Image)
+                } else if lower.contains("idea") || lower.contains("идея") {
+                    TextTransition::SelectType(ContentType::Idea)
+                } else if lower.contains("note") || lower.contains("заметк") {
+                    TextTransition::SelectType(ContentType::Note)
                 } else {
-                    TextTransition::ProcessFresh
+                    TextTransition::SelectType(ContentType::Other)
                 }
             }
+            Self::AwaitingCategory { .. } => {
+                TextTransition::SelectCategory(text.to_string())
+            }
             Self::AwaitingStatus { .. } => {
-                if lower.contains("done") || lower.contains("read") || lower.contains("watched") || lower.contains("прочитан") || lower.contains("посмотрел") {
-                    TextTransition::SelectStatus(ContentStatus::Done)
-                } else if lower.contains("to-read") || lower.contains("to-watch") || lower.contains("список") || lower.contains("отложен") {
-                    TextTransition::SelectStatus(ContentStatus::Pending)
+                if lower.contains("to-read") || lower.contains("to-watch") || lower.contains("planned") || lower.contains("отложен") {
+                    TextTransition::SelectStatus(ContentStatus::ToRead)
+                } else if lower.contains("read") || lower.contains("watched") || lower.contains("finished") || lower.contains("прочитан") || lower.contains("посмотрел") {
+                    TextTransition::SelectStatus(ContentStatus::Read)
+                } else if lower.contains("dropped") || lower.contains("бросил") {
+                    TextTransition::SelectStatus(ContentStatus::Dropped)
+                } else if lower.contains("using") || lower.contains("использую") {
+                    TextTransition::SelectStatus(ContentStatus::Using)
+                } else if lower.contains("library") || lower.contains("библиотек") {
+                    TextTransition::SelectStatus(ContentStatus::Library)
+                } else if lower.contains("interesting") || lower.contains("интересн") {
+                    TextTransition::SelectStatus(ContentStatus::Interesting)
                 } else {
                     TextTransition::ProcessFresh
                 }
@@ -142,6 +230,11 @@ impl UserState {
                 } else if lower.starts_with("year:") || lower.starts_with("год:") {
                     TextTransition::UpdateDetails {
                         field: "year".to_string(),
+                        value: text.trim().to_string(),
+                    }
+                } else if lower.starts_with("tag:") || lower.starts_with("тег:") {
+                    TextTransition::UpdateDetails {
+                        field: "tag".to_string(),
                         value: text.trim().to_string(),
                     }
                 } else {
@@ -165,39 +258,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn content_type_folder_should_return_correct_path() {
-        assert_eq!(ContentType::Book.folder(), "books");
-        assert_eq!(ContentType::Movie.folder(), "movies");
-        assert_eq!(ContentType::Series.folder(), "series");
-        assert_eq!(ContentType::Anime.folder(), "anime");
+    fn content_type_emoji_should_return_correct_emoji() {
+        assert_eq!(ContentType::Book.emoji(), "📚");
+        assert_eq!(ContentType::Article.emoji(), "📄");
+        assert_eq!(ContentType::Course.emoji(), "🎓");
     }
 
     #[test]
-    fn content_status_folder_should_return_correct_path() {
-        assert_eq!(ContentStatus::Done.folder(), "read");
-        assert_eq!(ContentStatus::Pending.folder(), "to-read");
+    fn content_status_label_should_return_correct_label() {
+        assert_eq!(ContentStatus::ToRead.label(), "To-read");
+        assert_eq!(ContentStatus::Watched.label(), "Watched");
+        assert_eq!(ContentStatus::InProgress.label(), "In progress");
     }
 
     #[test]
-    fn text_transition_should_select_book_type() {
+    fn text_transition_should_select_article_type() {
         let state = UserState::AwaitingType {
-            raw_text: "Lord of the Rings".to_string(),
+            raw_text: "Docker networking".to_string(),
         };
         assert_eq!(
-            state.text_transition("book"),
-            TextTransition::SelectType(ContentType::Book)
-        );
-    }
-
-    #[test]
-    fn text_transition_should_select_done_status() {
-        let state = UserState::AwaitingStatus {
-            title: "Lord of the Rings".to_string(),
-            content_type: ContentType::Book,
-        };
-        assert_eq!(
-            state.text_transition("done"),
-            TextTransition::SelectStatus(ContentStatus::Done)
+            state.text_transition("article"),
+            TextTransition::SelectType(ContentType::Article)
         );
     }
 }

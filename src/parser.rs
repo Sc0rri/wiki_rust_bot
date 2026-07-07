@@ -18,8 +18,16 @@ impl ParserService {
             Some(ContentType::Movie)
         } else if lower.contains("myanimelist") || lower.contains("anidb") || lower.contains("shikimori") {
             Some(ContentType::Anime)
-        } else if lower.contains("tv") || lower.contains("series") || lower.contains("show") {
-            Some(ContentType::Series)
+        } else if lower.contains("youtube.com") || lower.contains("youtu.be") {
+            Some(ContentType::Movie) // Default to Movie, user can change
+        } else if lower.contains("github.com") {
+            Some(ContentType::Tool)
+        } else if lower.contains("coursera.org") || lower.contains("udemy.com") {
+            Some(ContentType::Course)
+        } else if lower.contains("arxiv.org") {
+            Some(ContentType::Paper)
+        } else if lower.contains("pdf") || lower.ends_with(".pdf") {
+            Some(ContentType::Pdf)
         } else {
             None
         }
@@ -40,7 +48,7 @@ impl ParserService {
         let now = chrono::Utc::now().format("%Y-%m-%d");
         let slug = Self::slugify(title);
         
-        format!("{}/{}/{}_{}.md", content_type.folder(), status.folder(), now, slug)
+        format!("{}/{}/{}_{}.md", content_type.label().to_lowercase(), status.label().to_lowercase(), now, slug)
     }
 }
 
@@ -84,6 +92,14 @@ mod tests {
     }
 
     #[test]
+    fn detect_content_type_should_identify_paper_urls() {
+        assert_eq!(
+            ParserService::detect_content_type_from_url("https://arxiv.org/abs/1234.5678"),
+            Some(ContentType::Paper)
+        );
+    }
+
+    #[test]
     fn slugify_should_create_url_slug() {
         assert_eq!(ParserService::slugify("Lord of the Rings"), "lord-of-the-rings");
         assert_eq!(ParserService::slugify("The Matrix (1999)"), "the-matrix-1999");
@@ -94,9 +110,9 @@ mod tests {
         let result = ParserService::generate_filename(
             "Lord of the Rings",
             &ContentType::Book,
-            &ContentStatus::Pending
+            &ContentStatus::ToRead
         );
-        assert!(result.starts_with("books/to-read/"));
+        assert!(result.starts_with("book/to-read/"));
         assert!(result.ends_with(".md"));
     }
 }

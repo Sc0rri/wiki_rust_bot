@@ -10,18 +10,18 @@ impl AiService {
         text: &str,
     ) -> Result<Option<PendingItem>> {
         let prompt = format!(
-            r#"Analyze the following text and determine if it's a book, movie, series, or anime.
-Extract the title, and if possible: author/director, year, genre, and a brief description.
+            r#"Analyze the following text and determine what type of content it is.
+Possible types: book, movie, series, anime, article, course, paper, tool, pdf, image, idea, note, other.
 
 Text: "{}"
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "type": "book|movie|series|anime|other",
+  "type": "book|movie|series|anime|article|course|paper|tool|pdf|image|idea|note|other",
   "title": "Title here",
   "author": "Author or director if identifiable",
   "year": 2024,
-  "genre": "genre if identifiable",
+  "category": "category if applicable (for article/pdf/image)",
   "description": "brief 1-2 sentence description"
 }}
 
@@ -105,6 +105,14 @@ If you cannot determine the type, respond with: {{"type": "other", "title": "{}"
             Some("movie") => ContentType::Movie,
             Some("series") => ContentType::Series,
             Some("anime") => ContentType::Anime,
+            Some("article") => ContentType::Article,
+            Some("course") => ContentType::Course,
+            Some("paper") => ContentType::Paper,
+            Some("tool") => ContentType::Tool,
+            Some("pdf") => ContentType::Pdf,
+            Some("image") => ContentType::Image,
+            Some("idea") => ContentType::Idea,
+            Some("note") => ContentType::Note,
             _ => ContentType::Other,
         };
 
@@ -121,7 +129,7 @@ If you cannot determine the type, respond with: {{"type": "other", "title": "{}"
             .and_then(|v| v.as_i64())
             .map(|y| y as i32);
 
-        let genre = parsed.get("genre").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let category = parsed.get("category").and_then(|v| v.as_str()).map(|s| s.to_string());
         
         let description = parsed
             .get("description")
@@ -131,11 +139,15 @@ If you cannot determine the type, respond with: {{"type": "other", "title": "{}"
         Ok(Some(PendingItem {
             title,
             content_type,
-            status: ContentStatus::Pending,
+            status: ContentStatus::ToRead,
+            category,
             url: None,
             author,
             year,
             description,
+            tags: Vec::new(),
+            source: String::new(),
+            processed: false,
         }))
     }
 
@@ -151,11 +163,11 @@ Content preview: {}
 
 Respond ONLY with valid JSON:
 {{
-  "type": "book|movie|series|anime|other",
+  "type": "book|movie|series|anime|article|course|paper|tool|pdf|image|idea|note|other",
   "title": "Title",
   "author": "Author/director",
   "year": 2024,
-  "genre": "genre",
+  "category": "category if applicable",
   "description": "brief description"
 }}"#,
             url,

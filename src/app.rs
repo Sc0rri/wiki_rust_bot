@@ -2,7 +2,7 @@ use crate::ai::AiService;
 use crate::dedup::DedupService;
 use crate::github::GitHubService;
 use crate::parser::ParserService;
-use crate::state::{ContentStatus, PendingItem, TextTransition, UserState};
+use crate::state::{ContentStatus, ContentType, PendingItem, TextTransition, UserState};
 use crate::telegram::{self, TelegramService, Update};
 use crate::{get_env_or_secret, log_event};
 use worker::*;
@@ -58,6 +58,31 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
         }
 
         let chat_id = msg.chat.id;
+        
+        // Handle photos
+        if let Some(photos) = &msg.photo {
+            if !photos.is_empty() {
+                let env_clone = env.clone();
+                ctx.wait_until(async move {
+                    if let Err(e) = handle_photo(env_clone, chat_id).await {
+                        crate::log_event!("error", "telegram.photo.failed", "error={:?}", e);
+                    }
+                });
+                return Ok(());
+            }
+        }
+        
+        // Handle documents (PDFs) - clone before moving into closure
+        if let Some(doc) = msg.document.as_ref().cloned() {
+            let env_clone = env.clone();
+            ctx.wait_until(async move {
+                if let Err(e) = handle_document(env_clone, chat_id, doc).await {
+                    crate::log_event!("error", "telegram.document.failed", "error={:?}", e);
+                }
+            });
+            return Ok(());
+        }
+        
         let text = msg.text.clone().unwrap_or_default().trim().to_string();
         
         if text.is_empty() {
@@ -93,6 +118,56 @@ fn username_is_allowed(username: Option<&String>, allowed_username: &str) -> boo
     username.map(|u| u.as_str()).unwrap_or_default() == allowed_username
 }
 
+async fn handle_photo(env: Env, chat_id: i64) -> Result<()> {
+    let bot_token = env.secret("BOT_TOKEN")?.to_string();
+    
+    TelegramService::send_message(
+        &bot_token,
+        chat_id,
+        "🖼 Image received\n\nWhat is it?",
+        Some(TelegramService::category_keyboard(&ContentType::Image)),
+    )
+    .await?;
+
+    let kv = env.kv("STATE_STORE")?;
+    let state_key = format!("{}_state", chat_id);
+    let state = UserState::AwaitingCategory {
+        title: "photo".to_string(),
+        content_type: ContentType::Image,
+    };
+    save_state(&kv, &state_key, &state).await?;
+    
+    Ok(())
+}
+
+async fn handle_document(env: Env, chat_id: i64, doc: telegram::Document) -> Result<()> {
+    let bot_token = env.secret("BOT_TOKEN")?.to_string();
+    
+    let file_name = doc.file_name.unwrap_or_else(|| "document".to_string());
+    let is_pdf = file_name.to_lowercase().ends_with(".pdf");
+    
+    let content_type = if is_pdf { ContentType::Pdf } else { ContentType::Other };
+    
+    TelegramService::send_message(
+        &bot_token,
+        chat_id,
+        &format!("📄 {} detected\n\nCategory?", 
+            if is_pdf { "PDF" } else { "Document" }),
+        Some(TelegramService::category_keyboard(&content_type)),
+    )
+    .await?;
+
+    let kv = env.kv("STATE_STORE")?;
+    let state_key = format!("{}_state", chat_id);
+    let state = UserState::AwaitingCategory {
+        title: file_name,
+        content_type,
+    };
+    save_state(&kv, &state_key, &state).await?;
+    
+    Ok(())
+}
+
 async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
     let bot_token = env.secret("BOT_TOKEN")?.to_string();
     let kv = env.kv("STATE_STORE")?;
@@ -126,8 +201,7 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
         TextTransition::Cancel => unreachable!(),
         TextTransition::SelectType(content_type) => {
             let content_type_clone = content_type.clone();
-            let status_kb = TelegramService::status_keyboard(&content_type_clone);
-            let state = UserState::AwaitingStatus {
+            let state = UserState::AwaitingCategory {
                 title: match &state {
                     UserState::AwaitingType { raw_text } => raw_text.clone(),
                     _ => text.clone(),
@@ -136,27 +210,60 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
             };
             save_state(&kv, &state_key, &state).await?;
             
-            TelegramService::send_message(
-                &bot_token,
-                chat_id,
-                &format!("{} {} — already consumed or in watchlist?", 
-                    content_type_clone.emoji(), 
-                    content_type_clone.label()),
-                Some(status_kb),
-            )
-            .await?;
+            if content_type_clone.has_categories() {
+                let cat_kb = TelegramService::category_keyboard(&content_type_clone);
+                TelegramService::send_message(
+                    &bot_token,
+                    chat_id,
+                    &format!("{} Category?", content_type_clone.emoji()),
+                    Some(cat_kb),
+                )
+                .await?;
+            } else {
+                let mut item = PendingItem::new(
+                    match &state {
+                        UserState::AwaitingCategory { title, .. } => title.clone(),
+                        _ => text.clone(),
+                    },
+                    content_type_clone,
+                );
+                item.source = "telegram".to_string();
+                
+                let state = UserState::AwaitingStatus { item: item.clone() };
+                save_state(&kv, &state_key, &state).await?;
+                
+                let status_kb = TelegramService::status_keyboard(&item.content_type);
+                TelegramService::send_message(
+                    &bot_token,
+                    chat_id,
+                    &format!("{} Status?", item.content_type.emoji()),
+                    Some(status_kb),
+                )
+                .await?;
+            }
+        }
+        TextTransition::SelectCategory(category) => {
+            if let UserState::AwaitingCategory { title, content_type } = &state {
+                let mut item = PendingItem::new(title.clone(), content_type.clone());
+                item.category = Some(category);
+                item.source = "telegram".to_string();
+                
+                let state = UserState::AwaitingStatus { item: item.clone() };
+                save_state(&kv, &state_key, &state).await?;
+                
+                let status_kb = TelegramService::status_keyboard(&item.content_type);
+                TelegramService::send_message(
+                    &bot_token,
+                    chat_id,
+                    &format!("{} Status?", item.content_type.emoji()),
+                    Some(status_kb),
+                )
+                .await?;
+            }
         }
         TextTransition::SelectStatus(status) => {
-            if let UserState::AwaitingStatus { title, content_type } = &state {
-                let item = PendingItem {
-                    title: title.clone(),
-                    content_type: content_type.clone(),
-                    status,
-                    url: None,
-                    author: None,
-                    year: None,
-                    description: None,
-                };
+            if let UserState::AwaitingStatus { mut item } = state {
+                item.status = status;
                 
                 let state = UserState::AwaitingDetails { item: item.clone() };
                 save_state(&kv, &state_key, &state).await?;
@@ -164,7 +271,7 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
                 TelegramService::send_message(
                     &bot_token,
                     chat_id,
-                    "Add details? (author, year) or skip:",
+                    "Add details? (author, year, tags) or skip:",
                     Some(TelegramService::details_keyboard()),
                 )
                 .await?;
@@ -179,6 +286,7 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
                             item.year = Some(year);
                         }
                     }
+                    "tag" => item.tags.push(value),
                     _ => {}
                 }
                 
@@ -195,8 +303,9 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
             }
         }
         TextTransition::Confirm => {
-            if let UserState::AwaitingDetails { item } = state {
+            if let UserState::AwaitingDetails { mut item } = state {
                 delete_state(&kv, &state_key, chat_id).await?;
+                item.processed = false;
                 
                 let dedup_key = DedupService::title_key(&item.title);
                 if DedupService::is_processed(&dedup_kv, &dedup_key).await? {
@@ -224,7 +333,7 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
                         TelegramService::send_message(
                             &bot_token,
                             chat_id,
-                            &format!("✅ Saved: {}", path),
+                            &format!("✅ Saved:\n{}", path),
                             Some(TelegramService::remove_keyboard()),
                         )
                         .await?;
@@ -313,7 +422,7 @@ async fn process_fresh_text(
                 TelegramService::send_message(
                     bot_token,
                     chat_id,
-                    &format!("✅ Saved: {}", path),
+                    &format!("✅ Saved:\n{}", path),
                     Some(TelegramService::remove_keyboard()),
                 )
                 .await?;
@@ -352,7 +461,7 @@ async fn process_fresh_text(
                 TelegramService::send_message(
                     bot_token,
                     chat_id,
-                    "What type is this?",
+                    "Detected title.\n\nChoose type:",
                     Some(TelegramService::type_keyboard()),
                 )
                 .await?;
@@ -370,22 +479,48 @@ async fn process_fresh_text(
             }
         };
 
-        let state = UserState::AwaitingStatus {
-            title: item.title.clone(),
-            content_type: item.content_type.clone(),
-        };
-        save_state(kv, &format!("{}_state", chat_id), &state).await?;
+        let mut final_item = item;
+        final_item.source = "telegram".to_string();
         
-        let status_kb = TelegramService::status_keyboard(&item.content_type);
-        TelegramService::send_message(
-            bot_token,
-            chat_id,
-            &format!("{} {} — already consumed or in watchlist?", 
-                item.content_type.emoji(), 
-                item.content_type.label()),
-            Some(status_kb),
-        )
-        .await?;
+        if final_item.content_type.has_categories() {
+            let state = UserState::AwaitingCategory {
+                title: final_item.title.clone(),
+                content_type: final_item.content_type.clone(),
+            };
+            save_state(kv, &format!("{}_state", chat_id), &state).await?;
+            
+            let cat_kb = TelegramService::category_keyboard(&final_item.content_type);
+            TelegramService::send_message(
+                bot_token,
+                chat_id,
+                &format!("{} Category?", final_item.content_type.emoji()),
+                Some(cat_kb),
+            )
+            .await?;
+        } else if final_item.content_type.has_status_options() {
+            let state = UserState::AwaitingStatus { item: final_item.clone() };
+            save_state(kv, &format!("{}_state", chat_id), &state).await?;
+            
+            let status_kb = TelegramService::status_keyboard(&final_item.content_type);
+            TelegramService::send_message(
+                bot_token,
+                chat_id,
+                &format!("{} Status?", final_item.content_type.emoji()),
+                Some(status_kb),
+            )
+            .await?;
+        } else {
+            let state = UserState::AwaitingConfirmation { item: final_item };
+            save_state(kv, &format!("{}_state", chat_id), &state).await?;
+            
+            TelegramService::send_message(
+                bot_token,
+                chat_id,
+                "💡 Save this idea?",
+                Some(TelegramService::confirm_keyboard()),
+            )
+            .await?;
+        }
     }
 
     Ok(())
@@ -416,8 +551,10 @@ async fn handle_callback_query(env: Env, cq: telegram::CallbackQuery) -> Result<
 
     match data.as_str() {
         "confirm" => {
-            if let UserState::AwaitingDetails { item } = state {
+            if let UserState::AwaitingDetails { mut item } = state {
                 delete_state(&kv, &state_key, chat_id).await?;
+                item.processed = false;
+                
                 let dedup_kv = env.kv("DEDUP_STORE")?;
                 let dedup_key = DedupService::title_key(&item.title);
                 
@@ -446,7 +583,7 @@ async fn handle_callback_query(env: Env, cq: telegram::CallbackQuery) -> Result<
                         TelegramService::send_message(
                             &bot_token,
                             chat_id,
-                            &format!("✅ Saved: {}", path),
+                            &format!("✅ Saved:\n{}", path),
                             Some(TelegramService::remove_keyboard()),
                         )
                         .await?;
@@ -490,6 +627,7 @@ fn state_name(state: &UserState) -> &'static str {
     match state {
         UserState::None => "none",
         UserState::AwaitingType { .. } => "awaiting_type",
+        UserState::AwaitingCategory { .. } => "awaiting_category",
         UserState::AwaitingStatus { .. } => "awaiting_status",
         UserState::AwaitingDetails { .. } => "awaiting_details",
         UserState::AwaitingConfirmation { .. } => "awaiting_confirmation",
@@ -532,6 +670,13 @@ mod tests {
                 raw_text: "test".to_string()
             }),
             "awaiting_type"
+        );
+        assert_eq!(
+            state_name(&UserState::AwaitingCategory {
+                title: "test".to_string(),
+                content_type: ContentType::Article,
+            }),
+            "awaiting_category"
         );
     }
 }

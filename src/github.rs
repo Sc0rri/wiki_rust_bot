@@ -14,7 +14,7 @@ impl GitHubService {
         let repo = get_env_or_secret(env, "GITHUB_REPO", "Sc0rri/wiki");
         
         let filename = ParserService::generate_filename(&item.title, &item.content_type, &item.status);
-        let path = format!("inbox/{}", filename);
+        let path = format!("inbox/pending/{}", filename);
         
         let content = Self::generate_markdown(item);
         let content_base64 = base64::encode(&content);
@@ -75,6 +75,10 @@ impl GitHubService {
         md.push_str(&format!("type: {}\n", item.content_type.label().to_lowercase()));
         md.push_str(&format!("title: \"{}\"\n", item.title.replace('"', "\\\"")));
         
+        if let Some(ref category) = item.category {
+            md.push_str(&format!("category: \"{}\"\n", category.replace('"', "\\\"")));
+        }
+        
         if let Some(ref author) = item.author {
             md.push_str(&format!("author: \"{}\"\n", author.replace('"', "\\\"")));
         }
@@ -88,7 +92,17 @@ impl GitHubService {
         }
         
         md.push_str(&format!("status: {}\n", item.status.label().to_lowercase()));
+        md.push_str(&format!("source: {}\n", item.source));
         md.push_str(&format!("created: {}\n", chrono::Utc::now().format("%Y-%m-%d")));
+        md.push_str(&format!("processed: {}\n", item.processed));
+        
+        if !item.tags.is_empty() {
+            md.push_str("tags:\n");
+            for tag in &item.tags {
+                md.push_str(&format!("  - \"{}\"\n", tag));
+            }
+        }
+        
         md.push_str("---\n\n");
 
         if let Some(ref desc) = item.description {
@@ -106,23 +120,28 @@ mod tests {
 
     #[test]
     fn generate_markdown_should_create_valid_frontmatter() {
-        let item = PendingItem {
-            title: "Test Book".to_string(),
-            content_type: ContentType::Book,
-            status: ContentStatus::Done,
-            url: Some("https://example.com".to_string()),
-            author: Some("Test Author".to_string()),
-            year: Some(2024),
-            description: Some("A test description".to_string()),
-        };
+        let mut item = PendingItem::new(
+            "Test Article".to_string(),
+            ContentType::Article,
+        );
+        item.category = Some("Programming".to_string());
+        item.author = Some("Test Author".to_string());
+        item.year = Some(2024);
+        item.status = ContentStatus::ToRead;
+        item.source = "telegram".to_string();
+        item.tags = vec!["rust".to_string(), "wasm".to_string()];
 
         let md = GitHubService::generate_markdown(&item);
         
-        assert!(md.contains("type: book"));
-        assert!(md.contains("title: \"Test Book\""));
+        assert!(md.contains("type: article"));
+        assert!(md.contains("title: \"Test Article\""));
+        assert!(md.contains("category: \"Programming\""));
         assert!(md.contains("author: \"Test Author\""));
         assert!(md.contains("year: 2024"));
-        assert!(md.contains("status: done"));
-        assert!(md.contains("A test description"));
+        assert!(md.contains("status: to-read"));
+        assert!(md.contains("source: telegram"));
+        assert!(md.contains("tags:"));
+        assert!(md.contains("- \"rust\""));
+        assert!(md.contains("processed: false"));
     }
 }

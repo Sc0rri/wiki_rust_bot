@@ -57,4 +57,3 @@ async fn fetch(req: HttpRequest, env: Env, ctx: Context) -> Result<HttpResponse>
     let res = Response::empty()?;
     res.try_into()
 }
-
