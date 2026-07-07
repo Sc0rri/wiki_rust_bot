@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
 use worker::*;
 
 mod ai;
 mod app;
 mod dedup;
+mod detector;
 mod github;
 mod logger;
 mod parser;

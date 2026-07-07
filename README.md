@@ -1,14 +1,15 @@
 # 🤖 Wiki LLM Bot
 
-A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send links or titles via Telegram — the bot analyzes them with AI, lets you choose type/status/category, and saves YAML-frontmatter markdown files to a GitHub repository for later processing by Hermes.
+A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send links or titles via Telegram — the bot detects the source, lets you choose type/status/category/rating/comment, and saves YAML-frontmatter markdown files to a GitHub repository for later processing by Hermes.
 
 ## ✨ Features
 
-- **📚 Multi-content support**: Books, Movies, Series, Anime, Articles, Courses, Papers, Tools, PDFs, Images, Ideas, Notes
-- **🔗 Link or text**: Send URLs or just titles → AI auto-detects type
+- **📚 Multi-content support**: Books, Movies, Series, Anime, Articles, Courses, Papers, GitHub, YouTube, Tools, Ideas, Notes
+- **🔗 Smart detection**: URL provider detection (GitHub, YouTube, Goodreads, arXiv, etc.) without AI
 - **🎯 Granular statuses**: To-read/Read, To-watch/Watched, Planned/In progress/Finished, Dropped, Using/Library/Interesting
-- **📂 Categories**: Programming, News, Education, Research, Gaming, etc. (for articles, PDFs, images)
-- **🤖 AI-powered analysis**: Cloudflare Workers AI (`@cf/meta/llama-3.2-11b-instruct`) extracts metadata
+- **⭐ Rating & comments**: Rate 1-10 and add comments for consumed content
+- **📂 Categories**: Programming, News, Education, Gaming, etc. (for articles)
+- **🤖 AI-powered analysis**: Cloudflare Workers AI for text-only inputs (optional)
 - **💾 GitHub integration**: Saves to `<repository>/inbox/pending/`
 - **🖼️ Media support**: Handles photo and PDF uploads
 - **🔍 Deduplication**: Prevents duplicate entries via KV store
@@ -19,7 +20,8 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 ```
 Telegram → Cloudflare Worker
   ├── Cloudflare KV (state + dedup)
-  ├── Cloudflare AI (LLM analysis)
+  ├── Detector (URL → provider/resource type)
+  ├── Cloudflare AI (optional, for text-only inputs)
   ├── Cloudflare Queue (async processing)
   └── GitHub API → <repository>/inbox/pending/
           └── [Hermes] → LLM wiki
@@ -36,9 +38,10 @@ Telegram → Cloudflare Worker
     ├── app.rs          # Webhook handler + state machine
     ├── telegram.rs     # Telegram API types + service
     ├── github.rs       # GitHub API (commit to inbox/pending/)
-    ├── ai.rs           # Cloudflare AI analysis
-    ├── parser.rs       # URL/text parsing
-    ├── state.rs        # UserState, PendingItem, ContentType/Status
+    ├── ai.rs           # Cloudflare AI analysis (optional)
+    ├── detector.rs     # URL → provider/resource detection
+    ├── parser.rs       # Slugify, filename generation
+    ├── state.rs        # UserState, PendingItem, KnowledgeType/Status
     ├── dedup.rs        # Deduplication service
     └── logger.rs       # Logging utilities
 ```
@@ -63,30 +66,23 @@ npx wrangler kv namespace create DEDUP_STORE --preview
 
 Update `wrangler.toml` with the namespace IDs.
 
-### 3. Create Cloudflare Queue
-
-```bash
-npx wrangler queue create wiki-inbox-queue
-```
-
-### 4. Configure secrets
+### 3. Configure secrets
 
 ```bash
 npx wrangler secret put BOT_TOKEN
 npx wrangler secret put ALLOWED_USERNAME
 npx wrangler secret put GITHUB_TOKEN
 npx wrangler secret put GITHUB_REPO
-npx wrangler secret put AI_MODEL
-# Default: @cf/meta/llama-3.2-11b-instruct
+# Optional: npx wrangler secret put AI_MODEL (default: @cf/meta/llama-3.2-11b-instruct)
 ```
 
-### 5. Deploy
+### 4. Deploy
 
 ```bash
 npx wrangler deploy
 ```
 
-### 6. Set Telegram webhook
+### 5. Set Telegram webhook
 
 ```bash
 curl -F "url=https://<YOUR_WORKER_URL>/webhook" \
@@ -95,38 +91,53 @@ curl -F "url=https://<YOUR_WORKER_URL>/webhook" \
 
 ## 📖 Usage
 
-### Send a link
+### Send a link (URL detection)
 
 ```
-User: https://habr.com/ru/articles/123456/
-Bot: 📄 Article detected. Category?
-     [💻 Programming] [📰 News]
-     [🧠 Concept]     [📚 Education]
-     [🎮 Gaming]      [🎬 Entertainment]
-     [📋 Other]        [❌ Cancel]
-
-User: 💻 Programming
-Bot: Status?
-     [📥 Inbox] [⭐ Important]
-     [❌ Cancel]
-
-User: 📥 Inbox
-Bot: ⏳ Saving...
-Bot: ✅ Saved: inbox/pending/article/inbox/2026-07-07_docker-networking.md
-```
-
-### Send a title
-
-```
-User: Clean Architecture
-Bot: Detected title. Choose type:
+User: https://github.com/tokio-rs/tokio
+Bot: 🔗 GitHub: tokio
+     What type?
      [📚 Book]  [🎬 Movie]
      [📺 Series] [🎌 Anime]
      [📄 Article] [🎓 Course]
-     [📑 Paper]  [🛠 Tool]
-     [📕 PDF]    [🖼 Image]
+     [📑 Paper]  [🐙 GitHub]
+     [▶️ YouTube] [🛠 Tool]
      [💡 Idea]   [📝 Note]
      [📋 Other]
+
+User: 🛠 Tool
+Bot: 🛠 Status?
+     [⭐ Using] [📚 Library] [💡 Interesting]
+     [❌ Cancel]
+
+User: ⭐ Using
+Bot: Rate 1-10 or skip:
+
+User: 9
+Bot: Add a comment or skip:
+
+User: Essential for async Rust
+Bot: 🛠 tokio
+     🔗 https://github.com/tokio-rs/tokio
+     📦 GitHub
+     📌 Status: Using
+     ⭐ 9/10
+     💬 "Essential for async Rust"
+     
+     Save?
+     [✅ Save] [❌ Cancel]
+
+User: ✅ Save
+Bot: ✅ Saved: inbox/pending/tool/using/2026-07-07_tokio.md
+```
+
+### Send a title (text input)
+
+```
+User: Clean Architecture
+Bot: Detected title. What type?
+     [📚 Book]  [🎬 Movie]
+     ...
 
 User: 📚 Book
 Bot: 📚 Status?
@@ -134,11 +145,20 @@ Bot: 📚 Status?
      [❌ Dropped] [❌ Cancel]
 
 User: 📋 To-read
-Bot: Add details? (author, year, tags) or skip:
-     [⏭ Skip] [❌ Cancel]
+Bot: Rate 1-10 or skip:
+
+User: 8
+Bot: Add a comment or skip:
 
 User: ⏭ Skip
-Bot: ⏳ Saving...
+Bot: 📚 Clean Architecture
+     📌 Status: To-read
+     ⭐ 8/10
+     
+     Save?
+     [✅ Save] [❌ Cancel]
+
+User: ✅ Save
 Bot: ✅ Saved: inbox/pending/book/to-read/2026-07-07_clean-architecture.md
 ```
 
@@ -146,39 +166,50 @@ Bot: ✅ Saved: inbox/pending/book/to-read/2026-07-07_clean-architecture.md
 
 ```
 User: https://youtu.be/xxxxx
-Bot: ⏳ Processing link...
-Bot: ✅ Saved: inbox/pending/movie/to-watch/2026-07-07_video-title.md
+Bot: 🔗 YouTube: video title
+     What type?
+     [📚 Book]  [🎬 Movie]
+     ...
+     [▶️ YouTube]
+     
+User: ▶️ YouTube
+Bot: ▶️ Status?
+     [📋 To-watch] [✅ Watched]
+     [❌ Dropped] [❌ Cancel]
 ```
 
 ### Send a photo or PDF
 
 ```
 User: (photo upload)
-Bot: 🖼 Image received. What is it?
-     [📚 Book cover] [📝 Notes]
-     [📊 Diagram]    [📄 Document]
-     [📋 Other]
+Bot: 🖼 Image received
+     What type?
+     [📚 Book]  [🎬 Movie]
+     ...
 ```
 
 ## 📁 Saved File Format (YAML + Markdown)
 
-Each item is saved as a markdown file under `inbox/pending/` with YAML frontmatter:
+Each item is saved as a markdown file under `inbox/pending/` with rich YAML frontmatter:
 
 ```yaml
 ---
-type: book                   # Content type
-title: "Clean Architecture"  # Title
-category: "Programming"      # Optional category
-author: "Robert C. Martin"   # Optional author
-year: 2017                   # Optional year
-url: ""                      # Optional source URL
-status: to-read              # Current status
-source: telegram             # Source (telegram)
-created: 2026-07-07          # Date added
-processed: false             # Pending Hermes processing
-tags:                        # Optional tags
+id: 20260707153000-clean-architecture
+created: 2026-07-07
+source: telegram
+provider: goodreads
+url: "https://www.goodreads.com/book/show/123"
+type: book
+status: to-read
+title: "Clean Architecture"
+author: "Robert C. Martin"
+year: 2017
+rating: 8
+comment: "Great book on software architecture"
+tags:
   - "architecture"
   - "ddd"
+processed: false
 ---
 ```
 
@@ -190,19 +221,18 @@ tags:                        # Optional tags
 | 🎬 Movie | To-watch, Watched, Dropped |
 | 📺 Series | To-watch, Watched, Dropped |
 | 🎌 Anime | To-watch, Watched, Dropped |
-| 📄 Article | Category → Inbox/Important |
+| 📄 Article | To-read, Read, Dropped |
 | 🎓 Course | Planned, In progress, Finished, Dropped |
 | 📑 Paper | Saved directly |
+| 🐙 GitHub | Using, Library, Interesting |
+| ▶️ YouTube | To-watch, Watched, Dropped |
 | 🛠 Tool | Using, Library, Interesting |
-| 📕 PDF | Category → Inbox/Important |
-| 🖼 Image | Category → Inbox/Important |
 | 💡 Idea | Confirm/save directly |
 | 📝 Note | Confirm/save directly |
 | 📋 Other | Saved directly |
 
-### Categories (for Articles, PDFs, Images)
+### Categories
 
-**Articles**: Programming, News, Concept, Education, Gaming, Entertainment  
 **PDFs**: Programming, Research, Book, Manual  
 **Images**: Book cover, Notes, Diagram, Document
 
@@ -210,22 +240,29 @@ tags:                        # Optional tags
 
 ```
 inbox/pending/
-├── article/inbox/
-├── article/important/
 ├── book/to-read/
 ├── book/read/
 ├── book/dropped/
 ├── movie/to-watch/
 ├── movie/watched/
+├── series/to-watch/
+├── series/watched/
+├── anime/to-watch/
+├── anime/watched/
 ├── course/planned/
 ├── course/in-progress/
 ├── course/finished/
+├── paper/
+├── github_repo/using/
+├── github_repo/library/
+├── github_repo/interesting/
+├── youtube_video/to-watch/
+├── youtube_video/watched/
 ├── tool/using/
 ├── tool/library/
 ├── tool/interesting/
-├── paper/
-├── pdf/inbox/
-├── image/inbox/
+├── article/inbox/
+├── article/important/
 └── ...
 ```
 
@@ -234,7 +271,7 @@ inbox/pending/
 - Only the allowed Telegram username can use the bot
 - All secrets stored in Cloudflare Secrets
 - No hardcoded credentials
-- KV-based deduplication
+- KV-based deduplication (by title and URL)
 
 ## 📄 License
 

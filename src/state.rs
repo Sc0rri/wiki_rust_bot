@@ -1,41 +1,35 @@
 use serde::{Deserialize, Serialize};
 
+/// How the resource was provided (input method)
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct PendingItem {
-    pub title: String,
-    pub content_type: ContentType,
-    pub status: ContentStatus,
-    pub category: Option<String>,
-    pub url: Option<String>,
-    pub author: Option<String>,
-    pub year: Option<i32>,
-    pub description: Option<String>,
-    pub tags: Vec<String>,
-    pub source: String,
-    pub processed: bool,
+#[serde(rename_all = "snake_case")]
+pub enum ResourceType {
+    Url,
+    Text,
+    Pdf,
+    Image,
 }
 
-impl PendingItem {
-    pub fn new(title: String, content_type: ContentType) -> Self {
-        Self {
-            title,
-            content_type,
-            status: ContentStatus::ToRead,
-            category: None,
-            url: None,
-            author: None,
-            year: None,
-            description: None,
-            tags: Vec::new(),
-            source: String::new(),
-            processed: false,
-        }
-    }
+/// Provider/source of the resource (when applicable)
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceProvider {
+    Github,
+    Youtube,
+    Goodreads,
+    Imdb,
+    Arxiv,
+    Coursera,
+    Habr,
+    Wikipedia,
+    Web,
+    Direct,
 }
 
+/// What kind of knowledge this represents
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum ContentType {
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeType {
     Book,
     Movie,
     Series,
@@ -43,9 +37,9 @@ pub enum ContentType {
     Article,
     Course,
     Paper,
+    GithubRepo,
+    YoutubeVideo,
     Tool,
-    Pdf,
-    Image,
     Idea,
     Note,
     Other,
@@ -67,29 +61,103 @@ pub enum ContentStatus {
     Interesting,
 }
 
+/// Detected resource from URL analysis (no business logic)
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct DetectedResource {
+    pub provider: ResourceProvider,
+    pub resource_type: ResourceType,
+    pub url: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+/// Full pending item with rich metadata
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct PendingItem {
+    pub id: String,
+    pub created: String,
+    pub source: String,
+    pub provider: ResourceProvider,
+    pub url: Option<String>,
+    pub knowledge_type: KnowledgeType,
+    pub status: ContentStatus,
+    pub title: String,
+    pub author: Option<String>,
+    pub language: Option<String>,
+    pub category: Option<String>,
+    pub year: Option<i32>,
+    pub stars: Option<i32>,
+    pub rating: Option<u8>,
+    pub comment: Option<String>,
+    pub description: Option<String>,
+    pub tags: Vec<String>,
+    pub processed: bool,
+}
+
+impl PendingItem {
+    pub fn new(title: String, knowledge_type: KnowledgeType) -> Self {
+        let now = chrono::Utc::now();
+        Self {
+            id: format!("{}-{}", now.format("%Y%m%d%H%M%S"), title.chars().take(20).collect::<String>().to_lowercase().replace(' ', "-")),
+            created: now.format("%Y-%m-%d").to_string(),
+            source: "telegram".to_string(),
+            provider: ResourceProvider::Direct,
+            url: None,
+            knowledge_type,
+            status: ContentStatus::ToRead,
+            title,
+            author: None,
+            language: None,
+            category: None,
+            year: None,
+            stars: None,
+            rating: None,
+            comment: None,
+            description: None,
+            tags: Vec::new(),
+            processed: false,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", content = "data")]
 pub enum UserState {
     None,
-    AwaitingType { raw_text: String },
-    AwaitingCategory { title: String, content_type: ContentType },
-    AwaitingStatus { item: PendingItem },
-    AwaitingDetails { item: PendingItem },
-    AwaitingConfirmation { item: PendingItem },
+    AwaitingType {
+        raw_text: String,
+        detected: Option<DetectedResource>,
+    },
+    AwaitingCategory {
+        item: PendingItem,
+    },
+    AwaitingStatus {
+        item: PendingItem,
+    },
+    AwaitingRating {
+        item: PendingItem,
+    },
+    AwaitingComment {
+        item: PendingItem,
+    },
+    AwaitingConfirmation {
+        item: PendingItem,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TextTransition {
     Cancel,
-    SelectType(ContentType),
+    SelectType(KnowledgeType),
     SelectCategory(String),
     SelectStatus(ContentStatus),
-    UpdateDetails { field: String, value: String },
+    SetRating(u8),
+    SetComment(String),
     Confirm,
     ProcessFresh,
 }
 
-impl ContentType {
+impl KnowledgeType {
     pub fn emoji(&self) -> &'static str {
         match self {
             Self::Book => "📚",
@@ -99,9 +167,9 @@ impl ContentType {
             Self::Article => "📄",
             Self::Course => "🎓",
             Self::Paper => "📑",
+            Self::GithubRepo => "🐙",
+            Self::YoutubeVideo => "▶️",
             Self::Tool => "🛠",
-            Self::Pdf => "📕",
-            Self::Image => "🖼",
             Self::Idea => "💡",
             Self::Note => "📝",
             Self::Other => "📋",
@@ -117,9 +185,9 @@ impl ContentType {
             Self::Article => "Article",
             Self::Course => "Course",
             Self::Paper => "Paper",
+            Self::GithubRepo => "GitHub",
+            Self::YoutubeVideo => "YouTube",
             Self::Tool => "Tool",
-            Self::Pdf => "PDF",
-            Self::Image => "Image",
             Self::Idea => "Idea",
             Self::Note => "Note",
             Self::Other => "Other",
@@ -127,11 +195,11 @@ impl ContentType {
     }
 
     pub fn has_categories(&self) -> bool {
-        matches!(self, Self::Article | Self::Pdf | Self::Image)
+        false
     }
 
     pub fn has_status_options(&self) -> bool {
-        matches!(self, Self::Book | Self::Movie | Self::Series | Self::Anime | Self::Course | Self::Tool)
+        matches!(self, Self::Book | Self::Movie | Self::Series | Self::Anime | Self::Course | Self::Article | Self::GithubRepo | Self::Tool)
     }
 }
 
@@ -157,6 +225,31 @@ impl ContentStatus {
     }
 }
 
+impl ResourceProvider {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Github => "GitHub",
+            Self::Youtube => "YouTube",
+            Self::Goodreads => "Goodreads",
+            Self::Imdb => "IMDb",
+            Self::Arxiv => "arXiv",
+            Self::Coursera => "Coursera",
+            Self::Habr => "Habr",
+            Self::Wikipedia => "Wikipedia",
+            Self::Web => "Web",
+            Self::Direct => "",
+        }
+    }
+}
+
+impl DetectedResource {
+    pub fn preview_text(&self) -> String {
+        let provider = self.provider.label();
+        let title = self.title.as_deref().unwrap_or("Untitled");
+        format!("🔗 {}: {}", provider, title)
+    }
+}
+
 impl UserState {
     pub fn parse_or_none(raw: &str) -> Self {
         serde_json::from_str(raw).unwrap_or(Self::None)
@@ -164,7 +257,7 @@ impl UserState {
 
     pub fn text_transition(&self, text: &str) -> TextTransition {
         let lower = text.to_lowercase();
-        
+
         if lower == "cancel" || lower == "❌ cancel" {
             return TextTransition::Cancel;
         }
@@ -172,31 +265,31 @@ impl UserState {
         match self {
             Self::AwaitingType { .. } => {
                 if lower.contains("book") || lower.contains("книг") {
-                    TextTransition::SelectType(ContentType::Book)
+                    TextTransition::SelectType(KnowledgeType::Book)
                 } else if lower.contains("movie") || lower.contains("фильм") {
-                    TextTransition::SelectType(ContentType::Movie)
+                    TextTransition::SelectType(KnowledgeType::Movie)
                 } else if lower.contains("series") || lower.contains("сериал") {
-                    TextTransition::SelectType(ContentType::Series)
+                    TextTransition::SelectType(KnowledgeType::Series)
                 } else if lower.contains("anime") || lower.contains("аним") {
-                    TextTransition::SelectType(ContentType::Anime)
+                    TextTransition::SelectType(KnowledgeType::Anime)
                 } else if lower.contains("article") || lower.contains("статья") {
-                    TextTransition::SelectType(ContentType::Article)
+                    TextTransition::SelectType(KnowledgeType::Article)
                 } else if lower.contains("course") || lower.contains("курс") {
-                    TextTransition::SelectType(ContentType::Course)
+                    TextTransition::SelectType(KnowledgeType::Course)
                 } else if lower.contains("paper") {
-                    TextTransition::SelectType(ContentType::Paper)
+                    TextTransition::SelectType(KnowledgeType::Paper)
+                } else if lower.contains("github") || lower.contains("репозиторий") {
+                    TextTransition::SelectType(KnowledgeType::GithubRepo)
+                } else if lower.contains("youtube") || lower.contains("видео") || lower.contains("ютуб") {
+                    TextTransition::SelectType(KnowledgeType::YoutubeVideo)
                 } else if lower.contains("tool") || lower.contains("инструмент") {
-                    TextTransition::SelectType(ContentType::Tool)
-                } else if lower.contains("pdf") {
-                    TextTransition::SelectType(ContentType::Pdf)
-                } else if lower.contains("image") || lower.contains("изображен") {
-                    TextTransition::SelectType(ContentType::Image)
+                    TextTransition::SelectType(KnowledgeType::Tool)
                 } else if lower.contains("idea") || lower.contains("идея") {
-                    TextTransition::SelectType(ContentType::Idea)
+                    TextTransition::SelectType(KnowledgeType::Idea)
                 } else if lower.contains("note") || lower.contains("заметк") {
-                    TextTransition::SelectType(ContentType::Note)
+                    TextTransition::SelectType(KnowledgeType::Note)
                 } else {
-                    TextTransition::SelectType(ContentType::Other)
+                    TextTransition::SelectType(KnowledgeType::Other)
                 }
             }
             Self::AwaitingCategory { .. } => {
@@ -219,26 +312,23 @@ impl UserState {
                     TextTransition::ProcessFresh
                 }
             }
-            Self::AwaitingDetails { .. } => {
+            Self::AwaitingRating { .. } => {
+                if let Ok(rating) = lower.parse::<u8>() {
+                    if rating >= 1 && rating <= 10 {
+                        return TextTransition::SetRating(rating);
+                    }
+                }
                 if lower == "skip" || lower == "пропустить" || lower == "далее" {
                     TextTransition::Confirm
-                } else if lower.starts_with("author:") || lower.starts_with("автор:") {
-                    TextTransition::UpdateDetails {
-                        field: "author".to_string(),
-                        value: text.trim().to_string(),
-                    }
-                } else if lower.starts_with("year:") || lower.starts_with("год:") {
-                    TextTransition::UpdateDetails {
-                        field: "year".to_string(),
-                        value: text.trim().to_string(),
-                    }
-                } else if lower.starts_with("tag:") || lower.starts_with("тег:") {
-                    TextTransition::UpdateDetails {
-                        field: "tag".to_string(),
-                        value: text.trim().to_string(),
-                    }
                 } else {
                     TextTransition::ProcessFresh
+                }
+            }
+            Self::AwaitingComment { .. } => {
+                if lower == "skip" || lower == "пропустить" || lower == "далее" {
+                    TextTransition::Confirm
+                } else {
+                    TextTransition::SetComment(text.to_string())
                 }
             }
             Self::AwaitingConfirmation { .. } => {
@@ -258,10 +348,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn content_type_emoji_should_return_correct_emoji() {
-        assert_eq!(ContentType::Book.emoji(), "📚");
-        assert_eq!(ContentType::Article.emoji(), "📄");
-        assert_eq!(ContentType::Course.emoji(), "🎓");
+    fn knowledge_type_emoji_should_return_correct_emoji() {
+        assert_eq!(KnowledgeType::Book.emoji(), "📚");
+        assert_eq!(KnowledgeType::GithubRepo.emoji(), "🐙");
+        assert_eq!(KnowledgeType::YoutubeVideo.emoji(), "▶️");
     }
 
     #[test]
@@ -272,13 +362,10 @@ mod tests {
     }
 
     #[test]
-    fn text_transition_should_select_article_type() {
-        let state = UserState::AwaitingType {
-            raw_text: "Docker networking".to_string(),
-        };
-        assert_eq!(
-            state.text_transition("article"),
-            TextTransition::SelectType(ContentType::Article)
-        );
+    fn pending_item_should_generate_id() {
+        let item = PendingItem::new("Test Title".to_string(), KnowledgeType::Book);
+        assert!(!item.id.is_empty());
+        assert_eq!(item.source, "telegram");
+        assert!(!item.processed);
     }
 }

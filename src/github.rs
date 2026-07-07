@@ -1,4 +1,4 @@
-use crate::state::{ContentStatus, ContentType, PendingItem};
+use crate::state::{ContentStatus, KnowledgeType, PendingItem, ResourceProvider};
 use crate::parser::ParserService;
 use crate::get_env_or_secret;
 use worker::*;
@@ -13,7 +13,8 @@ impl GitHubService {
         let token = env.secret("GITHUB_TOKEN")?.to_string();
         let repo = get_env_or_secret(env, "GITHUB_REPO", "Sc0rri/wiki");
         
-        let filename = ParserService::generate_filename(&item.title, &item.content_type, &item.status);
+        let status = item.status.label().to_lowercase();
+        let filename = ParserService::generate_filename(&item.title, &item.knowledge_type, &status);
         let path = format!("inbox/pending/{}", filename);
         
         let content = Self::generate_markdown(item);
@@ -25,7 +26,7 @@ impl GitHubService {
         );
 
         let payload = serde_json::json!({
-            "message": format!("Add {}: {}", item.content_type.label().to_lowercase(), item.title),
+            "message": format!("Add {}: {}", item.knowledge_type.label().to_lowercase(), item.title),
             "content": content_base64,
             "branch": "main"
         });
@@ -72,29 +73,46 @@ impl GitHubService {
         let mut md = String::new();
 
         md.push_str("---\n");
-        md.push_str(&format!("type: {}\n", item.content_type.label().to_lowercase()));
-        md.push_str(&format!("title: \"{}\"\n", item.title.replace('"', "\\\"")));
+        md.push_str(&format!("id: {}\n", item.id));
+        md.push_str(&format!("created: {}\n", item.created));
+        md.push_str(&format!("source: {}\n", item.source));
+        md.push_str(&format!("provider: {}\n", item.provider.label().to_lowercase()));
         
-        if let Some(ref category) = item.category {
-            md.push_str(&format!("category: \"{}\"\n", category.replace('"', "\\\"")));
+        if let Some(ref url) = item.url {
+            md.push_str(&format!("url: \"{}\"\n", url));
         }
+        
+        md.push_str(&format!("type: {}\n", item.knowledge_type.label().to_lowercase()));
+        md.push_str(&format!("status: {}\n", item.status.label().to_lowercase()));
+        md.push_str(&format!("title: \"{}\"\n", item.title.replace('"', "\\\"")));
         
         if let Some(ref author) = item.author {
             md.push_str(&format!("author: \"{}\"\n", author.replace('"', "\\\"")));
+        }
+        
+        if let Some(ref language) = item.language {
+            md.push_str(&format!("language: {}\n", language));
+        }
+        
+        if let Some(ref category) = item.category {
+            md.push_str(&format!("category: \"{}\"\n", category.replace('"', "\\\"")));
         }
         
         if let Some(year) = item.year {
             md.push_str(&format!("year: {}\n", year));
         }
         
-        if let Some(ref url) = item.url {
-            md.push_str(&format!("url: \"{}\"\n", url));
+        if let Some(stars) = item.stars {
+            md.push_str(&format!("stars: {}\n", stars));
         }
         
-        md.push_str(&format!("status: {}\n", item.status.label().to_lowercase()));
-        md.push_str(&format!("source: {}\n", item.source));
-        md.push_str(&format!("created: {}\n", chrono::Utc::now().format("%Y-%m-%d")));
-        md.push_str(&format!("processed: {}\n", item.processed));
+        if let Some(rating) = item.rating {
+            md.push_str(&format!("rating: {}\n", rating));
+        }
+        
+        if let Some(ref comment) = item.comment {
+            md.push_str(&format!("comment: \"{}\"\n", comment.replace('"', "\\\"")));
+        }
         
         if !item.tags.is_empty() {
             md.push_str("tags:\n");
@@ -103,6 +121,7 @@ impl GitHubService {
             }
         }
         
+        md.push_str(&format!("processed: {}\n", item.processed));
         md.push_str("---\n\n");
 
         if let Some(ref desc) = item.description {
@@ -120,15 +139,12 @@ mod tests {
 
     #[test]
     fn generate_markdown_should_create_valid_frontmatter() {
-        let mut item = PendingItem::new(
-            "Test Article".to_string(),
-            ContentType::Article,
-        );
+        let mut item = PendingItem::new("Test Article".to_string(), KnowledgeType::Article);
         item.category = Some("Programming".to_string());
         item.author = Some("Test Author".to_string());
         item.year = Some(2024);
         item.status = ContentStatus::ToRead;
-        item.source = "telegram".to_string();
+        item.provider = ResourceProvider::Web;
         item.tags = vec!["rust".to_string(), "wasm".to_string()];
 
         let md = GitHubService::generate_markdown(&item);
@@ -140,8 +156,11 @@ mod tests {
         assert!(md.contains("year: 2024"));
         assert!(md.contains("status: to-read"));
         assert!(md.contains("source: telegram"));
+        assert!(md.contains("provider: web"));
         assert!(md.contains("tags:"));
         assert!(md.contains("- \"rust\""));
         assert!(md.contains("processed: false"));
+        assert!(md.contains("id: "));
+        assert!(md.contains("created: "));
     }
 }

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use worker::*;
 
+use crate::state::KnowledgeType;
+
 // Type buttons
 pub const BTN_BOOK: &str = "📚 Book";
 pub const BTN_MOVIE: &str = "🎬 Movie";
@@ -9,9 +11,9 @@ pub const BTN_ANIME: &str = "🎌 Anime";
 pub const BTN_ARTICLE: &str = "📄 Article";
 pub const BTN_COURSE: &str = "🎓 Course";
 pub const BTN_PAPER: &str = "📑 Paper";
+pub const BTN_GITHUB: &str = "🐙 GitHub";
+pub const BTN_YOUTUBE: &str = "▶️ YouTube";
 pub const BTN_TOOL: &str = "🛠 Tool";
-pub const BTN_PDF: &str = "📕 PDF";
-pub const BTN_IMAGE: &str = "🖼 Image";
 pub const BTN_IDEA: &str = "💡 Idea";
 pub const BTN_NOTE: &str = "📝 Note";
 pub const BTN_OTHER: &str = "📋 Other";
@@ -28,21 +30,6 @@ pub const BTN_DROPPED: &str = "❌ Dropped";
 pub const BTN_USING: &str = "⭐ Using";
 pub const BTN_LIBRARY: &str = "📚 Library";
 pub const BTN_INTERESTING: &str = "💡 Interesting";
-
-// Category buttons
-pub const BTN_PROGRAMMING: &str = "💻 Programming";
-pub const BTN_NEWS: &str = "📰 News";
-pub const BTN_CONCEPT: &str = "🧠 Concept";
-pub const BTN_EDUCATION: &str = "📚 Education";
-pub const BTN_GAMING: &str = "🎮 Gaming";
-pub const BTN_ENTERTAINMENT: &str = "🎬 Entertainment";
-pub const BTN_RESEARCH: &str = "🔬 Research";
-pub const BTN_BOOK_CAT: &str = "📖 Book";
-pub const BTN_MANUAL: &str = "📘 Manual";
-pub const BTN_NOTES: &str = "📝 Notes";
-pub const BTN_DOCUMENT: &str = "📄 Document";
-pub const BTN_DIAGRAM: &str = "📊 Diagram";
-pub const BTN_BOOK_COVER: &str = "📚 Book cover";
 
 // Common buttons
 pub const BTN_CANCEL: &str = "❌ Cancel";
@@ -119,27 +106,7 @@ impl TelegramService {
                 .unwrap()
                 .insert("reply_markup".to_string(), kb);
         }
-
-        let headers = Headers::new();
-        headers.set("Content-Type", "application/json")?;
-
-        let mut req_init = RequestInit::new();
-        req_init.with_method(Method::Post);
-        req_init.with_headers(headers);
-        req_init.with_body(Some(serde_json::to_string(&payload)?.into()));
-
-        let req = Request::new_with_init(&url, &req_init)?;
-        let mut resp = Fetch::Request(req).send().await?;
-        if resp.status_code() != 200 {
-            let err_text = resp.text().await?;
-            crate::log_event!(
-                "warn",
-                "telegram.send_message.failed",
-                "body_chars={}",
-                err_text.chars().count()
-            );
-        }
-        Ok(())
+        send_telegram_api(&url, &payload).await
     }
 
     pub fn type_keyboard() -> serde_json::Value {
@@ -159,11 +126,11 @@ impl TelegramService {
                 ],
                 [
                     {"text": BTN_PAPER},
-                    {"text": BTN_TOOL}
+                    {"text": BTN_GITHUB}
                 ],
                 [
-                    {"text": BTN_PDF},
-                    {"text": BTN_IMAGE}
+                    {"text": BTN_YOUTUBE},
+                    {"text": BTN_TOOL}
                 ],
                 [
                     {"text": BTN_IDEA},
@@ -178,63 +145,9 @@ impl TelegramService {
         })
     }
 
-    pub fn category_keyboard(content_type: &crate::state::ContentType) -> serde_json::Value {
-        let buttons: Vec<Vec<serde_json::Value>> = match content_type {
-            crate::state::ContentType::Article => vec![
-                vec![
-                    serde_json::json!({"text": BTN_PROGRAMMING}),
-                    serde_json::json!({"text": BTN_NEWS})
-                ],
-                vec![
-                    serde_json::json!({"text": BTN_CONCEPT}),
-                    serde_json::json!({"text": BTN_EDUCATION})
-                ],
-                vec![
-                    serde_json::json!({"text": BTN_GAMING}),
-                    serde_json::json!({"text": BTN_ENTERTAINMENT})
-                ],
-                vec![serde_json::json!({"text": BTN_OTHER})]
-            ],
-            crate::state::ContentType::Pdf => vec![
-                vec![
-                    serde_json::json!({"text": BTN_PROGRAMMING}),
-                    serde_json::json!({"text": BTN_RESEARCH})
-                ],
-                vec![
-                    serde_json::json!({"text": BTN_BOOK_CAT}),
-                    serde_json::json!({"text": BTN_MANUAL})
-                ],
-                vec![serde_json::json!({"text": BTN_OTHER})]
-            ],
-            crate::state::ContentType::Image => vec![
-                vec![
-                    serde_json::json!({"text": BTN_BOOK_COVER}),
-                    serde_json::json!({"text": BTN_NOTES})
-                ],
-                vec![
-                    serde_json::json!({"text": BTN_DIAGRAM}),
-                    serde_json::json!({"text": BTN_DOCUMENT})
-                ],
-                vec![serde_json::json!({"text": BTN_OTHER})]
-            ],
-            _ => vec![vec![serde_json::json!({"text": BTN_CANCEL})]]
-        };
-
-        let mut keyboard = serde_json::json!(buttons);
-        keyboard
-            .as_object_mut()
-            .unwrap()
-            .insert("one_time_keyboard".to_string(), serde_json::json!(true));
-        keyboard
-            .as_object_mut()
-            .unwrap()
-            .insert("resize_keyboard".to_string(), serde_json::json!(true));
-        keyboard
-    }
-
-    pub fn status_keyboard(content_type: &crate::state::ContentType) -> serde_json::Value {
-        let buttons: Vec<Vec<serde_json::Value>> = match content_type {
-            crate::state::ContentType::Book => vec![
+    pub fn status_keyboard(knowledge_type: &KnowledgeType) -> serde_json::Value {
+        let buttons: Vec<Vec<serde_json::Value>> = match knowledge_type {
+            KnowledgeType::Book => vec![
                 vec![
                     serde_json::json!({"text": BTN_TO_READ}),
                     serde_json::json!({"text": BTN_READ})
@@ -244,7 +157,7 @@ impl TelegramService {
                     serde_json::json!({"text": BTN_CANCEL})
                 ]
             ],
-            crate::state::ContentType::Movie | crate::state::ContentType::Series | crate::state::ContentType::Anime => vec![
+            KnowledgeType::Movie | KnowledgeType::Series | KnowledgeType::Anime | KnowledgeType::YoutubeVideo => vec![
                 vec![
                     serde_json::json!({"text": BTN_TO_WATCH}),
                     serde_json::json!({"text": BTN_WATCHED})
@@ -254,7 +167,7 @@ impl TelegramService {
                     serde_json::json!({"text": BTN_CANCEL})
                 ]
             ],
-            crate::state::ContentType::Course => vec![
+            KnowledgeType::Course => vec![
                 vec![
                     serde_json::json!({"text": BTN_PLANNED}),
                     serde_json::json!({"text": BTN_IN_PROGRESS}),
@@ -265,7 +178,7 @@ impl TelegramService {
                     serde_json::json!({"text": BTN_CANCEL})
                 ]
             ],
-            crate::state::ContentType::Tool => vec![
+            KnowledgeType::GithubRepo | KnowledgeType::Tool => vec![
                 vec![
                     serde_json::json!({"text": BTN_USING}),
                     serde_json::json!({"text": BTN_LIBRARY}),
@@ -288,19 +201,6 @@ impl TelegramService {
         keyboard
     }
 
-    pub fn details_keyboard() -> serde_json::Value {
-        serde_json::json!({
-            "keyboard": [
-                [
-                    {"text": BTN_SKIP},
-                    {"text": BTN_CANCEL}
-                ]
-            ],
-            "one_time_keyboard": true,
-            "resize_keyboard": true
-        })
-    }
-
     pub fn confirm_keyboard() -> serde_json::Value {
         serde_json::json!({
             "keyboard": [
@@ -319,45 +219,27 @@ impl TelegramService {
             "remove_keyboard": true
         })
     }
+}
 
-    pub async fn answer_callback_query(
-        bot_token: &str,
-        callback_query_id: &str,
-        text: Option<&str>,
-    ) -> Result<()> {
-        let url = format!(
-            "https://api.telegram.org/bot{}/answerCallbackQuery",
-            bot_token
+async fn send_telegram_api(url: &str, payload: &serde_json::Value) -> Result<()> {
+    let headers = Headers::new();
+    headers.set("Content-Type", "application/json")?;
+
+    let mut req_init = RequestInit::new();
+    req_init.with_method(Method::Post);
+    req_init.with_headers(headers);
+    req_init.with_body(Some(serde_json::to_string(payload)?.into()));
+
+    let req = Request::new_with_init(url, &req_init)?;
+    let mut resp = Fetch::Request(req).send().await?;
+    if resp.status_code() != 200 {
+        let err_text = resp.text().await?;
+        crate::log_event!(
+            "warn",
+            "telegram.api.failed",
+            "body_chars={}",
+            err_text.chars().count()
         );
-        let mut payload = serde_json::json!({
-            "callback_query_id": callback_query_id,
-        });
-        if let Some(t) = text {
-            payload
-                .as_object_mut()
-                .unwrap()
-                .insert("text".to_string(), serde_json::Value::String(t.to_string()));
-        }
-
-        let headers = Headers::new();
-        headers.set("Content-Type", "application/json")?;
-
-        let mut req_init = RequestInit::new();
-        req_init.with_method(Method::Post);
-        req_init.with_headers(headers);
-        req_init.with_body(Some(serde_json::to_string(&payload)?.into()));
-
-        let req = Request::new_with_init(&url, &req_init)?;
-        let mut resp = Fetch::Request(req).send().await?;
-        if resp.status_code() != 200 {
-            let err_text = resp.text().await?;
-            crate::log_event!(
-                "warn",
-                "telegram.answer_callback_query.failed",
-                "body_chars={}",
-                err_text.chars().count()
-            );
-        }
-        Ok(())
     }
+    Ok(())
 }
