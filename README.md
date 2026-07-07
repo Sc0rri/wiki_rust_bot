@@ -4,13 +4,14 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 
 ## ✨ Features
 
-- **📚 Multi-content support**: Books, Movies, Series, Anime, Articles, Courses, Papers, GitHub, YouTube, Tools, Ideas, Notes
+- **📚 Multi-content support**: Books, Movies, Series, Anime, Articles, Courses, GitHub repos, YouTube videos, Tools, Notes
 - **🔗 Smart detection**: URL provider detection (GitHub, YouTube, Goodreads, arXiv, etc.) without AI
 - **🎯 Granular statuses**: To-read/Read, To-watch/Watched, Planned/In progress/Finished, Dropped, Using/Library/Interesting
 - **⭐ Rating & comments**: Rate 1-10 and add comments for consumed content
-- **🤖 AI-powered analysis**: Cloudflare Workers AI for text-only inputs (optional)
+- **🤖 AI-powered analysis**: Cloudflare Workers AI extracts title, author, year, description, and tags from text inputs
+- **🔗 GitHub metadata resolution**: Fetches description, language, stars, and topics via GitHub API (no AI)
 - **💾 GitHub integration**: Saves to `<repository>/inbox/pending/` as flat YAML files
-- **🖼️ Media support**: Handles photo and PDF uploads
+- **🖼️ Media support**: Handles photo and PDF uploads with file_id tracking
 - **🔍 Deduplication**: Prevents duplicate entries via KV store
 - **⌨️ Button-based UI**: All interactions via Telegram reply keyboards
 
@@ -20,7 +21,8 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 Telegram → Cloudflare Worker
   ├── Cloudflare KV (state + dedup)
   ├── Detector (URL → provider/resource type)
-  ├── Cloudflare AI (optional, for text-only inputs)
+  ├── Resolver (GitHub API → metadata, no AI)
+  ├── Cloudflare AI (for text-only inputs → tags + description)
   ├── Cloudflare Queue (async processing)
   └── GitHub API → <repository>/inbox/pending/
           └── [Hermes] → LLM wiki
@@ -33,15 +35,16 @@ Telegram → Cloudflare Worker
 ├── wrangler.toml
 ├── README.md
 └── src/
-    ├── lib.rs          # HTTP entry + Queue consumer
+    ├── lib.rs          # HTTP entry + module declarations
     ├── app.rs          # Webhook handler + state machine
     ├── telegram.rs     # Telegram API types + service
-    ├── github.rs       # GitHub API (commit to inbox/pending/)
-    ├── ai.rs           # Cloudflare AI analysis (optional)
-    ├── detector.rs     # URL → provider/resource detection
+    ├── github.rs       # GitHub commit to inbox/pending/
+    ├── ai.rs           # Cloudflare Workers AI analysis
+    ├── detector.rs     # URL → provider/resource type
+    ├── resolver.rs     # Public API resolvers (GitHub, etc.)
     ├── parser.rs       # Slugify, filename generation
     ├── state.rs        # UserState, PendingItem, KnowledgeType/Status
-    ├── dedup.rs        # Deduplication service
+    ├── dedup.rs        # KV-based deduplication
     └── logger.rs       # Logging utilities
 ```
 
@@ -90,37 +93,42 @@ curl -F "url=https://<YOUR_WORKER_URL>/webhook" \
 
 ## 📖 Usage
 
-### Send a link (URL detection)
+### Send a GitHub link
 
 ```
 User: https://github.com/tokio-rs/tokio
-Bot: 🔗 GitHub: tokio
+Bot: 🔗 GitHub: tokio-rs/tokio
      What type?
      [📚 Book]  [🎬 Movie]
      [📺 Series] [🎌 Anime]
      [📄 Article] [🎓 Course]
-     [📑 Paper]  [🐙 GitHub]
-     [▶️ YouTube] [🛠 Tool]
-     [💡 Idea]   [📝 Note]
+     [🐙 GitHub] [▶️ YouTube]
+     [🛠 Tool]   [📝 Note]
      [📋 Other]
 
-User: 🛠 Tool
-Bot: 🛠 Status?
+User: 🐙 GitHub
+Bot: Fetching repo info...
+Bot: 🐙 tokio
+     🔗 https://github.com/tokio-rs/tokio
+     📦 GitHub
+     📝 An event-driven, non-blocking I/O platform for Rust
+     🔤 Rust | ⭐ 32000
+     📌 Status?
      [⭐ Using] [📚 Library] [💡 Interesting]
      [❌ Cancel]
 
-User: ⭐ Using
+User: 📚 Library
 Bot: Rate 1-10 or skip:
 
-User: 9
+User: ⏭ Skip
 Bot: Add a comment or skip:
 
 User: Essential for async Rust
-Bot: 🛠 tokio
+Bot: 🐙 tokio
      🔗 https://github.com/tokio-rs/tokio
      📦 GitHub
-     📌 Status: Using
-     ⭐ 9/10
+     🔤 Rust | ⭐ 32000
+     📌 Status: Library
      💬 "Essential for async Rust"
      
      Save?
@@ -130,16 +138,14 @@ User: ✅ Save
 Bot: ✅ Saved: inbox/pending/2026-07-07_tokio.yaml
 ```
 
-### Send a title (text input)
+### Send a title (text input with AI)
 
 ```
 User: Clean Architecture
-Bot: Detected title. What type?
-     [📚 Book]  [🎬 Movie]
-     ...
-
-User: 📚 Book
-Bot: 📚 Status?
+Bot: 🔍 Analyzing...
+Bot: 📚 Clean Architecture
+     👤 Robert C. Martin (2017)
+     📌 Status?
      [📋 To-read] [✅ Read]
      [❌ Dropped] [❌ Cancel]
 
@@ -165,7 +171,7 @@ Bot: ✅ Saved: inbox/pending/2026-07-07_clean-architecture.yaml
 
 ```
 User: https://youtu.be/xxxxx
-Bot: 🔗 YouTube: video title
+Bot: 🔗 YouTube: (video)
      What type?
      [📚 Book]  [🎬 Movie]
      ...
@@ -202,13 +208,16 @@ type: book
 status: to-read
 title: "Clean Architecture"
 author: "Robert C. Martin"
-language: rust
+language: en
 year: 2017
+stars: null
 rating: 8
 comment: "Great book on software architecture"
+description: "A guide to software design and architecture"
 tags:
   - "architecture"
   - "ddd"
+  - "clean code"
 processed: false
 ---
 ```
@@ -223,13 +232,17 @@ processed: false
 | 🎌 Anime | To-watch, Watched, Dropped |
 | 📄 Article | To-read, Read, Dropped |
 | 🎓 Course | Planned, In progress, Finished, Dropped |
-| 📑 Paper | Saved directly |
 | 🐙 GitHub | Using, Library, Interesting |
 | ▶️ YouTube | To-watch, Watched, Dropped |
 | 🛠 Tool | Using, Library, Interesting |
-| 💡 Idea | Confirm/save directly |
 | 📝 Note | Confirm/save directly |
 | 📋 Other | Saved directly |
+
+### Deduplication Methods
+
+- **By URL**: Exact match on the source URL
+- **By title**: Exact match on the item title
+- **Expired draft detection**: Bot notifies if a draft times out (30 min TTL)
 
 ## 🔒 Security
 
