@@ -7,6 +7,7 @@ mod detector;
 mod github;
 mod logger;
 mod parser;
+mod resolver;
 mod state;
 mod telegram;
 

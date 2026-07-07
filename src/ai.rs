@@ -11,18 +11,18 @@ impl AiService {
     ) -> Result<Option<PendingItem>> {
         let prompt = format!(
             r#"Analyze the following text and determine what type of content it is.
-Possible types: book, movie, series, anime, article, course, paper, tool, idea, note, other.
+Possible types: book, movie, series, anime, article, course, tool, note, other.
 
 Text: "{}"
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "type": "book|movie|series|anime|article|course|paper|tool|idea|note|other",
+  "type": "book|movie|series|anime|article|course|tool|note|other",
   "title": "Title here",
   "author": "Author or director if identifiable",
   "year": 2024,
-  "category": "category if applicable",
-  "description": "brief 1-2 sentence description"
+  "description": "brief 1-2 sentence description",
+  "tags": ["tag1", "tag2"]
 }}
 
 If you cannot determine the type, respond with: {{"type": "other", "title": "{}"}}"#,
@@ -87,12 +87,10 @@ If you cannot determine the type, respond with: {{"type": "other", "title": "{}"
             Some("movie") => KnowledgeType::Movie,
             Some("series") => KnowledgeType::Series,
             Some("anime") => KnowledgeType::Anime,
-            Some("article") => KnowledgeType::Article,
+            Some("article") | Some("paper") => KnowledgeType::Article,
             Some("course") => KnowledgeType::Course,
-            Some("paper") => KnowledgeType::Paper,
             Some("tool") => KnowledgeType::Tool,
-            Some("idea") => KnowledgeType::Idea,
-            Some("note") => KnowledgeType::Note,
+            Some("note") | Some("idea") => KnowledgeType::Note,
             _ => KnowledgeType::Other,
         };
 
@@ -106,14 +104,26 @@ If you cannot determine the type, respond with: {{"type": "other", "title": "{}"
         let year = parsed.get("year").and_then(|v| v.as_i64()).map(|y| y as i32);
         let description = parsed.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
 
+        // Extract tags from AI response
+        let tags: Vec<String> = parsed
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let mut item = PendingItem::new(title, knowledge_type);
         item.author = author;
         item.year = year;
         item.description = description;
+        item.tags = tags;
         Ok(Some(item))
     }
 
-    pub async fn analyze_url(
+    pub async fn enrich_url(
         env: &Env,
         url: &str,
         page_content: &str,
@@ -125,12 +135,12 @@ Content preview: {}
 
 Respond ONLY with valid JSON:
 {{
-  "type": "book|movie|series|anime|article|course|paper|tool|idea|note|other",
+  "type": "book|movie|series|anime|article|course|tool|note|other",
   "title": "Title",
   "author": "Author/director",
   "year": 2024,
-  "category": "category if applicable",
-  "description": "brief description"
+  "description": "brief description",
+  "tags": ["tag1", "tag2"]
 }}"#,
             url,
             &page_content[..page_content.len().min(2000)]

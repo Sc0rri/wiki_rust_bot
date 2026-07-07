@@ -10,11 +10,9 @@ pub const BTN_SERIES: &str = "📺 Series";
 pub const BTN_ANIME: &str = "🎌 Anime";
 pub const BTN_ARTICLE: &str = "📄 Article";
 pub const BTN_COURSE: &str = "🎓 Course";
-pub const BTN_PAPER: &str = "📑 Paper";
 pub const BTN_GITHUB: &str = "🐙 GitHub";
 pub const BTN_YOUTUBE: &str = "▶️ YouTube";
 pub const BTN_TOOL: &str = "🛠 Tool";
-pub const BTN_IDEA: &str = "💡 Idea";
 pub const BTN_NOTE: &str = "📝 Note";
 pub const BTN_OTHER: &str = "📋 Other";
 
@@ -125,15 +123,11 @@ impl TelegramService {
                     {"text": BTN_COURSE}
                 ],
                 [
-                    {"text": BTN_PAPER},
-                    {"text": BTN_GITHUB}
+                    {"text": BTN_GITHUB},
+                    {"text": BTN_YOUTUBE}
                 ],
                 [
-                    {"text": BTN_YOUTUBE},
-                    {"text": BTN_TOOL}
-                ],
-                [
-                    {"text": BTN_IDEA},
+                    {"text": BTN_TOOL},
                     {"text": BTN_NOTE}
                 ],
                 [

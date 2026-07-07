@@ -36,11 +36,9 @@ pub enum KnowledgeType {
     Anime,
     Article,
     Course,
-    Paper,
     GithubRepo,
     YoutubeVideo,
     Tool,
-    Idea,
     Note,
     Other,
 }
@@ -162,11 +160,9 @@ impl KnowledgeType {
             Self::Anime => "🎌",
             Self::Article => "📄",
             Self::Course => "🎓",
-            Self::Paper => "📑",
             Self::GithubRepo => "🐙",
             Self::YoutubeVideo => "▶️",
             Self::Tool => "🛠",
-            Self::Idea => "💡",
             Self::Note => "📝",
             Self::Other => "📋",
         }
@@ -180,11 +176,9 @@ impl KnowledgeType {
             Self::Anime => "Anime",
             Self::Article => "Article",
             Self::Course => "Course",
-            Self::Paper => "Paper",
             Self::GithubRepo => "GitHub",
             Self::YoutubeVideo => "YouTube",
             Self::Tool => "Tool",
-            Self::Idea => "Idea",
             Self::Note => "Note",
             Self::Other => "Other",
         }
@@ -268,17 +262,13 @@ impl UserState {
                     TextTransition::SelectType(KnowledgeType::Article)
                 } else if lower.contains("course") || lower.contains("курс") {
                     TextTransition::SelectType(KnowledgeType::Course)
-                } else if lower.contains("paper") {
-                    TextTransition::SelectType(KnowledgeType::Paper)
                 } else if lower.contains("github") || lower.contains("репозиторий") {
                     TextTransition::SelectType(KnowledgeType::GithubRepo)
                 } else if lower.contains("youtube") || lower.contains("видео") || lower.contains("ютуб") {
                     TextTransition::SelectType(KnowledgeType::YoutubeVideo)
                 } else if lower.contains("tool") || lower.contains("инструмент") {
                     TextTransition::SelectType(KnowledgeType::Tool)
-                } else if lower.contains("idea") || lower.contains("идея") {
-                    TextTransition::SelectType(KnowledgeType::Idea)
-                } else if lower.contains("note") || lower.contains("заметк") {
+                } else if lower.contains("note") || lower.contains("заметк") || lower.contains("idea") || lower.contains("идея") {
                     TextTransition::SelectType(KnowledgeType::Note)
                 } else {
                     TextTransition::SelectType(KnowledgeType::Other)
