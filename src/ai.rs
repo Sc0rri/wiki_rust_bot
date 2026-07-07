@@ -1,6 +1,18 @@
 use crate::state::{KnowledgeType, PendingItem};
 use crate::get_env_or_secret;
+use serde::Deserialize;
 use worker::*;
+
+#[derive(Deserialize)]
+struct AiAnalysis {
+    #[serde(rename = "type")]
+    content_type: String,
+    title: Option<String>,
+    author: Option<String>,
+    year: Option<i32>,
+    description: Option<String>,
+    tags: Option<Vec<String>>,
+}
 
 pub struct AiService;
 
@@ -10,23 +22,10 @@ impl AiService {
         text: &str,
     ) -> Result<Option<PendingItem>> {
         let prompt = format!(
-            r#"Analyze the following text and determine what type of content it is.
-Possible types: book, movie, series, anime, article, course, tool, note, other.
-
-Text: "{}"
-
-Respond ONLY with valid JSON in this exact format:
-{{
-  "type": "book|movie|series|anime|article|course|tool|note|other",
-  "title": "Title here",
-  "author": "Author or director if identifiable",
-  "year": 2024,
-  "description": "brief 1-2 sentence description",
-  "tags": ["tag1", "tag2"]
-}}
-
-If you cannot determine the type, respond with: {{"type": "other", "title": "{}"}}"#,
-            text, text
+            "Analyze the following text and determine what type of content it is.\n\
+             Text: \"{}\"\n\
+             Respond with JSON matching the required schema.",
+            text
         );
 
         let ai = match env.ai("AI") {
@@ -37,18 +36,38 @@ If you cannot determine the type, respond with: {{"type": "other", "title": "{}"
             }
         };
 
-        let model = get_env_or_secret(env, "AI_MODEL", "@cf/meta/llama-3.2-11b-instruct");
+        let model = get_env_or_secret(env, "AI_MODEL", "@cf/meta/llama-3.1-8b-instruct-fp8-fast");
 
         let input = serde_json::json!({
-            "messages": [{"role": "user", "content": prompt}]
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.15,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["book", "movie", "series", "anime", "article", "course", "tool", "note", "other"]
+                        },
+                        "title": { "type": "string" },
+                        "author": { "type": "string" },
+                        "year": { "type": "integer" },
+                        "description": { "type": "string" },
+                        "tags": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    },
+                    "required": ["type", "title"]
+                }
+            }
         });
 
         let result: Result<serde_json::Value> = ai.run(model, &input).await;
         let response_text = match result {
             Ok(value) => {
                 if let Some(text) = value.get("response").and_then(|v| v.as_str()) {
-                    text.to_string()
-                } else if let Some(text) = value.as_str() {
                     text.to_string()
                 } else {
                     return Ok(None);
@@ -57,24 +76,17 @@ If you cannot determine the type, respond with: {{"type": "other", "title": "{}"
             _ => return Ok(None),
         };
 
+        // JSON Schema guarantees valid JSON — no manual parsing needed
         Self::parse_ai_response(&response_text, text)
     }
 
     fn parse_ai_response(response: &str, original_text: &str) -> Result<Option<PendingItem>> {
         let cleaned = response.trim();
-        if cleaned == "null" || cleaned.is_empty() {
+        if cleaned.is_empty() {
             return Ok(None);
         }
 
-        let json_start = cleaned.find('{');
-        let json_end = cleaned.rfind('}');
-        let json_str = if let (Some(start), Some(end)) = (json_start, json_end) {
-            &cleaned[start..=end]
-        } else {
-            cleaned
-        };
-
-        let parsed: serde_json::Value = match serde_json::from_str(json_str) {
+        let parsed: AiAnalysis = match serde_json::from_str(cleaned) {
             Ok(v) => v,
             Err(e) => {
                 crate::log_event!("warn", "ai.analysis.json_parse_failed", "error={}", e);
@@ -82,44 +94,26 @@ If you cannot determine the type, respond with: {{"type": "other", "title": "{}"
             }
         };
 
-        let knowledge_type = match parsed.get("type").and_then(|v| v.as_str()) {
-            Some("book") => KnowledgeType::Book,
-            Some("movie") => KnowledgeType::Movie,
-            Some("series") => KnowledgeType::Series,
-            Some("anime") => KnowledgeType::Anime,
-            Some("article") | Some("paper") => KnowledgeType::Article,
-            Some("course") => KnowledgeType::Course,
-            Some("tool") => KnowledgeType::Tool,
-            Some("note") | Some("idea") => KnowledgeType::Note,
+        let knowledge_type = match parsed.content_type.as_str() {
+            "book" => KnowledgeType::Book,
+            "movie" => KnowledgeType::Movie,
+            "series" => KnowledgeType::Series,
+            "anime" => KnowledgeType::Anime,
+            "article" => KnowledgeType::Article,
+            "course" => KnowledgeType::Course,
+            "tool" => KnowledgeType::Tool,
+            "note" => KnowledgeType::Note,
             _ => KnowledgeType::Other,
         };
 
-        let title = parsed
-            .get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or(original_text)
-            .to_string();
-
-        let author = parsed.get("author").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let year = parsed.get("year").and_then(|v| v.as_i64()).map(|y| y as i32);
-        let description = parsed.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-
-        // Extract tags from AI response
-        let tags: Vec<String> = parsed
-            .get("tags")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| t.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let mut item = PendingItem::new(title, knowledge_type);
-        item.author = author;
-        item.year = year;
-        item.description = description;
-        item.tags = tags;
+        let mut item = PendingItem::new(
+            parsed.title.unwrap_or_else(|| original_text.to_string()),
+            knowledge_type,
+        );
+        item.author = parsed.author;
+        item.year = parsed.year;
+        item.description = parsed.description;
+        item.tags = parsed.tags.unwrap_or_default();
         Ok(Some(item))
     }
 
@@ -129,19 +123,10 @@ If you cannot determine the type, respond with: {{"type": "other", "title": "{}"
         page_content: &str,
     ) -> Result<Option<PendingItem>> {
         let prompt = format!(
-            r#"Analyze this webpage and extract content metadata.
-URL: {}
-Content preview: {}
-
-Respond ONLY with valid JSON:
-{{
-  "type": "book|movie|series|anime|article|course|tool|note|other",
-  "title": "Title",
-  "author": "Author/director",
-  "year": 2024,
-  "description": "brief description",
-  "tags": ["tag1", "tag2"]
-}}"#,
+            "Analyze this webpage and extract content metadata.\n\
+             URL: {}\n\
+             Content preview: {}\n\
+             Respond with JSON matching the required schema.",
             url,
             &page_content[..page_content.len().min(2000)]
         );
@@ -154,18 +139,38 @@ Respond ONLY with valid JSON:
             }
         };
 
-        let model = get_env_or_secret(env, "AI_MODEL", "@cf/meta/llama-3.2-11b-instruct");
+        let model = get_env_or_secret(env, "AI_MODEL", "@cf/meta/llama-3.1-8b-instruct-fp8-fast");
 
         let input = serde_json::json!({
-            "messages": [{"role": "user", "content": prompt}]
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.15,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["book", "movie", "series", "anime", "article", "course", "tool", "note", "other"]
+                        },
+                        "title": { "type": "string" },
+                        "author": { "type": "string" },
+                        "year": { "type": "integer" },
+                        "description": { "type": "string" },
+                        "tags": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    },
+                    "required": ["type", "title"]
+                }
+            }
         });
 
         let result: Result<serde_json::Value> = ai.run(model, &input).await;
         let response_text = match result {
             Ok(value) => {
                 if let Some(text) = value.get("response").and_then(|v| v.as_str()) {
-                    text.to_string()
-                } else if let Some(text) = value.as_str() {
                     text.to_string()
                 } else {
                     return Ok(None);
@@ -175,5 +180,23 @@ Respond ONLY with valid JSON:
         };
 
         Self::parse_ai_response(&response_text, url)
+    }
+
+    /// Format a preview of the AI analysis for display to the user
+    pub fn format_preview(item: &PendingItem) -> String {
+        let mut preview = format!("🤖 Looks like: {} {}\n", item.knowledge_type.emoji(), item.title);
+        if let Some(ref author) = item.author {
+            preview.push_str(&format!("   👤 {}\n", author));
+        }
+        if let Some(year) = item.year {
+            preview.push_str(&format!("   📅 {}\n", year));
+        }
+        if let Some(ref desc) = item.description {
+            if desc.len() < 120 {
+                preview.push_str(&format!("   📝 {}\n", desc));
+            }
+        }
+        preview.push_str("\nConfirm or change type?");
+        preview
     }
 }

@@ -236,6 +236,19 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
                 save_state(&kv, &state_key, &state).await?;
             }
         }
+        TextTransition::ConfirmAi => {
+            if let UserState::AwaitingAiConfirm { item } = state {
+                let kt = item.knowledge_type.clone();
+                if kt.has_status_options() {
+                    let status_kb = TelegramService::status_keyboard(&kt);
+                    let state = UserState::AwaitingStatus { item };
+                    save_state(&kv, &state_key, &state).await?;
+                    TelegramService::send_message(&bot_token, chat_id, &format!("{} Status?", kt.emoji()), Some(status_kb)).await?;
+                } else {
+                    save_and_finish(env, &bot_token, &dedup_kv, chat_id, item).await?;
+                }
+            }
+        }
         TextTransition::Confirm => {
             if let UserState::AwaitingConfirmation { item } = state {
                 delete_state(&kv, &state_key, chat_id).await?;
@@ -258,6 +271,9 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
             delete_state(&kv, &state_key, chat_id).await?;
             process_fresh(env, &bot_token, &dedup_kv, chat_id, &text).await?;
         }
+        TextTransition::Expired => {
+            TelegramService::send_message(&bot_token, chat_id, "⏰ Draft expired. Please start over.", Some(TelegramService::remove_keyboard())).await?;
+        }
     }
 
     Ok(())
@@ -275,21 +291,15 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
         };
         save_state(&kv, &format!("{}_state", chat_id), &state).await?;
     } else {
-        // Issue 2: Use AI to analyze text-only input
+        // Issue 2 + 4: Use AI to analyze text-only input, then ask user to confirm
         match AiService::analyze_content(&env, text).await {
             Ok(Some(mut item)) => {
                 item.source = "telegram".to_string();
-                let kt = item.knowledge_type.clone();
+                let preview = AiService::format_preview(&item);
+                let state = UserState::AwaitingAiConfirm { item };
                 let state_kv = env.kv("STATE_STORE")?;
-                if kt.has_status_options() {
-                    let status_kb = TelegramService::status_keyboard(&kt);
-                    let state = UserState::AwaitingStatus { item };
-                    save_state(&state_kv, &format!("{}_state", chat_id), &state).await?;
-                    TelegramService::send_message(bot_token, chat_id, &format!("{} Status?", kt.emoji()), Some(status_kb)).await?;
-                } else {
-                    let dedup_kv = env.kv("DEDUP_STORE")?;
-                    save_and_finish(env.clone(), bot_token, &dedup_kv, chat_id, item).await?;
-                }
+                save_state(&state_kv, &format!("{}_state", chat_id), &state).await?;
+                TelegramService::send_message(bot_token, chat_id, &preview, Some(TelegramService::confirm_ai_keyboard())).await?;
             }
             _ => {
                 // Fallback: ask user to pick type
@@ -361,6 +371,7 @@ fn state_name(state: &UserState) -> &'static str {
         UserState::AwaitingStatus { .. } => "awaiting_status",
         UserState::AwaitingRating { .. } => "awaiting_rating",
         UserState::AwaitingComment { .. } => "awaiting_comment",
+        UserState::AwaitingAiConfirm { .. } => "awaiting_ai_confirm",
         UserState::AwaitingConfirmation { .. } => "awaiting_confirmation",
     }
 }

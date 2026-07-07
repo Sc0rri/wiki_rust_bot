@@ -134,6 +134,9 @@ pub enum UserState {
     AwaitingComment {
         item: PendingItem,
     },
+    AwaitingAiConfirm {
+        item: PendingItem,
+    },
     AwaitingConfirmation {
         item: PendingItem,
     },
@@ -146,8 +149,10 @@ pub enum TextTransition {
     SelectStatus(ContentStatus),
     SetRating(u8),
     SetComment(String),
+    ConfirmAi,
     Confirm,
     ProcessFresh,
+    Expired,
 }
 
 impl KnowledgeType {
@@ -307,6 +312,13 @@ impl UserState {
                     TextTransition::Confirm
                 } else {
                     TextTransition::SetComment(text.to_string())
+                }
+            }
+            Self::AwaitingAiConfirm { .. } => {
+                if lower == "confirm" || lower == "✅ confirm" || lower == "да" || lower == "подтвердить" {
+                    TextTransition::ConfirmAi
+                } else {
+                    TextTransition::ProcessFresh
                 }
             }
             Self::AwaitingConfirmation { .. } => {

@@ -8,7 +8,7 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 - **🔗 Smart detection**: URL provider detection (GitHub, YouTube, Goodreads, arXiv, etc.) without AI
 - **🎯 Granular statuses**: To-read/Read, To-watch/Watched, Planned/In progress/Finished, Dropped, Using/Library/Interesting
 - **⭐ Rating & comments**: Rate 1-10 and add comments for consumed content
-- **🤖 AI-powered analysis**: Cloudflare Workers AI extracts title, author, year, description, and tags from text inputs
+- **🤖 AI-powered analysis** (JSON Schema mode): Cloudflare Workers AI extracts title, author, year, description, and tags with guaranteed structured output
 - **🔗 GitHub metadata resolution**: Fetches description, language, stars, and topics via GitHub API (no AI)
 - **💾 GitHub integration**: Saves to `<repository>/inbox/pending/` as flat YAML files
 - **🖼️ Media support**: Handles photo and PDF uploads with file_id tracking
@@ -19,11 +19,11 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 
 ```
 Telegram → Cloudflare Worker
-  ├── Cloudflare KV (state + dedup)
+  ├── Cloudflare KV (state + dedup, 30 min TTL)
   ├── Detector (URL → provider/resource type)
   ├── Resolver (GitHub API → metadata, no AI)
-  ├── Cloudflare AI (for text-only inputs → tags + description)
-  ├── Cloudflare Queue (async processing)
+  ├── Cloudflare AI (JSON Schema mode, temperature 0.15)
+  ├── Cloudflare Queue (async enrichment)
   └── GitHub API → <repository>/inbox/pending/
           └── [Hermes] → LLM wiki
 ```
@@ -39,9 +39,9 @@ Telegram → Cloudflare Worker
     ├── app.rs          # Webhook handler + state machine
     ├── telegram.rs     # Telegram API types + service
     ├── github.rs       # GitHub commit to inbox/pending/
-    ├── ai.rs           # Cloudflare Workers AI analysis
+    ├── ai.rs           # Cloudflare Workers AI (JSON Schema mode)
     ├── detector.rs     # URL → provider/resource type
-    ├── resolver.rs     # Public API resolvers (GitHub, etc.)
+    ├── resolver.rs     # Public API resolvers (GitHub API)
     ├── parser.rs       # Slugify, filename generation
     ├── state.rs        # UserState, PendingItem, KnowledgeType/Status
     ├── dedup.rs        # KV-based deduplication
@@ -75,7 +75,8 @@ npx wrangler secret put BOT_TOKEN
 npx wrangler secret put ALLOWED_USERNAME
 npx wrangler secret put GITHUB_TOKEN
 npx wrangler secret put GITHUB_REPO
-# Optional: npx wrangler secret put AI_MODEL (default: @cf/meta/llama-3.2-11b-instruct)
+# Optional: npx wrangler secret put AI_MODEL
+# Default: @cf/meta/llama-3.1-8b-instruct-fp8-fast
 ```
 
 ### 4. Deploy
@@ -93,7 +94,7 @@ curl -F "url=https://<YOUR_WORKER_URL>/webhook" \
 
 ## 📖 Usage
 
-### Send a GitHub link
+### Send a GitHub link (with API metadata enrichment)
 
 ```
 User: https://github.com/tokio-rs/tokio
@@ -107,10 +108,8 @@ Bot: 🔗 GitHub: tokio-rs/tokio
      [📋 Other]
 
 User: 🐙 GitHub
-Bot: Fetching repo info...
+Bot: Resolving via GitHub API...
 Bot: 🐙 tokio
-     🔗 https://github.com/tokio-rs/tokio
-     📦 GitHub
      📝 An event-driven, non-blocking I/O platform for Rust
      🔤 Rust | ⭐ 32000
      📌 Status?
@@ -125,8 +124,6 @@ Bot: Add a comment or skip:
 
 User: Essential for async Rust
 Bot: 🐙 tokio
-     🔗 https://github.com/tokio-rs/tokio
-     📦 GitHub
      🔤 Rust | ⭐ 32000
      📌 Status: Library
      💬 "Essential for async Rust"
@@ -138,14 +135,26 @@ User: ✅ Save
 Bot: ✅ Saved: inbox/pending/2026-07-07_tokio.yaml
 ```
 
-### Send a title (text input with AI)
+### Send a title (text input with AI analysis + human confirmation)
 
 ```
 User: Clean Architecture
-Bot: 🔍 Analyzing...
-Bot: 📚 Clean Architecture
-     👤 Robert C. Martin (2017)
-     📌 Status?
+Bot: 🔍 Analyzing using AI (JSON Schema mode)...
+
+Bot: 🤖 Looks like: 📚 Book
+     👤 Robert C. Martin
+     📅 2017
+     Confirm or change type?
+     [✅ Confirm]
+     [📚 Book] [🎬 Movie]
+     [📺 Series] [🎌 Anime]
+     [📄 Article] [🎓 Course]
+     [🐙 GitHub] [▶️ YouTube]
+     [🛠 Tool]   [📝 Note]
+     📋 Other    [❌ Cancel]
+
+User: ✅ Confirm
+Bot: 📚 Status?
      [📋 To-read] [✅ Read]
      [❌ Dropped] [❌ Cancel]
 
@@ -157,6 +166,7 @@ Bot: Add a comment or skip:
 
 User: ⏭ Skip
 Bot: 📚 Clean Architecture
+     👤 Robert C. Martin
      📌 Status: To-read
      ⭐ 8/10
      
@@ -166,6 +176,8 @@ Bot: 📚 Clean Architecture
 User: ✅ Save
 Bot: ✅ Saved: inbox/pending/2026-07-07_clean-architecture.yaml
 ```
+
+If AI misidentifies the type — user just taps the correct button instead of Confirm.
 
 ### Send a YouTube link
 
@@ -237,6 +249,23 @@ processed: false
 | 🛠 Tool | Using, Library, Interesting |
 | 📝 Note | Confirm/save directly |
 | 📋 Other | Saved directly |
+
+### AI Analysis Details
+
+- **JSON Schema mode**: Workers AI `response_format` with `json_schema` guarantees valid structured output — no manual JSON parsing
+- **Model**: `@cf/meta/llama-3.1-8b-instruct-fp8-fast` by default (configurable via `AI_MODEL`)
+- **Temperature**: 0.15 (low — deterministic classification, not creative generation)
+- **Extracted fields**: `type` (enum), `title` (required), `author`, `year`, `description`, `tags`
+- **Human-in-the-loop**: AI result is shown as a suggestion — user confirms or changes type before proceeding
+
+### GitHub Metadata Resolution (no AI)
+
+When a user selects `🐙 GitHub` type, the bot fetches real metadata via GitHub API:
+- `title` → actual repository name (not URL slug)
+- `description` → repo description
+- `language` → primary programming language
+- `stars` → star count
+- `tags` → repository topics
 
 ### Deduplication Methods
 
