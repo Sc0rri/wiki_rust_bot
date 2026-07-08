@@ -4,9 +4,9 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 
 ## ✨ Features
 
-- **📚 Multi-content support**: Books, Movies, Series, Anime, Articles, Courses, GitHub repos, YouTube videos, Tools, Notes
+- **📚 Multi-content support**: Books, Movies, Series, Anime, Articles, Courses, Tools, Notes
 - **🔗 Smart detection**: URL provider detection (GitHub, YouTube, Goodreads, arXiv, etc.) without AI
-- **🎯 Granular statuses**: To-read/Read, To-watch/Watched, Planned/In progress/Finished, Dropped, Using/Library/Interesting
+- **🎯 Unified statuses**: Backlog/Done/Dropped/Shelved with context-aware labels (To-read/Read, To-watch/Watched, Planned/Finished, Using/Library)
 - **⭐ Rating & comments**: Rate 1-10 and add comments for consumed content
 - **🤖 AI-powered analysis** (JSON Schema mode): Cloudflare Workers AI extracts title, author, year, description, and tags with guaranteed structured output
 - **🔗 GitHub metadata resolution**: Fetches description, language, stars, and topics via GitHub API (no AI)
@@ -103,17 +103,17 @@ Bot: 🔗 GitHub: tokio-rs/tokio
      [📚 Book]  [🎬 Movie]
      [📺 Series] [🎌 Anime]
      [📄 Article] [🎓 Course]
-     [🐙 GitHub] [▶️ YouTube]
      [🛠 Tool]   [📝 Note]
      [📋 Other]
 
-User: 🐙 GitHub
+User: 🛠 Tool
 Bot: Resolving via GitHub API...
-Bot: 🐙 tokio
+Bot: 🛠 tokio
      📝 An event-driven, non-blocking I/O platform for Rust
      🔤 Rust | ⭐ 32000
      📌 Status?
-     [⭐ Using] [📚 Library] [💡 Interesting]
+     [📋 Backlog] [✅ Done]
+     [📚 Shelved] [❌ Dropped]
      [❌ Cancel]
 
 User: 📚 Library
@@ -123,7 +123,7 @@ User: ⏭ Skip
 Bot: Add a comment or skip:
 
 User: Essential for async Rust
-Bot: 🐙 tokio
+Bot: 🛠 tokio
      🔤 Rust | ⭐ 32000
      📌 Status: Library
      💬 "Essential for async Rust"
@@ -149,9 +149,8 @@ Bot: 🤖 Looks like: 📚 Book
      [📚 Book] [🎬 Movie]
      [📺 Series] [🎌 Anime]
      [📄 Article] [🎓 Course]
-     [🐙 GitHub] [▶️ YouTube]
      [🛠 Tool]   [📝 Note]
-     📋 Other    [❌ Cancel]
+     [📋 Other]  [❌ Cancel]
 
 User: ✅ Confirm
 Bot: 📚 Status?
@@ -186,11 +185,13 @@ User: https://youtu.be/xxxxx
 Bot: 🔗 YouTube: (video)
      What type?
      [📚 Book]  [🎬 Movie]
-     ...
-     [▶️ YouTube]
+     [📺 Series] [🎌 Anime]
+     [📄 Article] [🎓 Course]
+     [🛠 Tool]   [📝 Note]
+     [📋 Other]
      
-User: ▶️ YouTube
-Bot: ▶️ Status?
+User: 🎬 Movie
+Bot: 🎬 Status?
      [📋 To-watch] [✅ Watched]
      [❌ Dropped] [❌ Cancel]
 ```
@@ -202,7 +203,10 @@ User: (photo upload)
 Bot: 🖼 Image received
      What type?
      [📚 Book]  [🎬 Movie]
-     ...
+     [📺 Series] [🎌 Anime]
+     [📄 Article] [🎓 Course]
+     [🛠 Tool]   [📝 Note]
+     [📋 Other]
 ```
 
 ## 📁 Saved File Format (YAML)
@@ -244,11 +248,18 @@ processed: false
 | 🎌 Anime | To-watch, Watched, Dropped |
 | 📄 Article | To-read, Read, Dropped |
 | 🎓 Course | Planned, In progress, Finished, Dropped |
-| 🐙 GitHub | Using, Library, Interesting |
-| ▶️ YouTube | To-watch, Watched, Dropped |
-| 🛠 Tool | Using, Library, Interesting |
+| 🛠 Tool | Backlog, Done, Dropped, Shelved |
 | 📝 Note | Confirm/save directly |
 | 📋 Other | Saved directly |
+
+### Status Reference
+
+| Status | Book | Movie/Series/Anime | Course | Tool |
+|--------|------|-------------------|--------|------|
+| Backlog | To-read | To-watch | Planned | Backlog |
+| Done | Read | Watched | Finished | Done |
+| Dropped | Dropped | Dropped | Dropped | Dropped |
+| Shelved | Interesting | Interesting | — | Using |
 
 ### AI Analysis Details
 
@@ -260,7 +271,7 @@ processed: false
 
 ### GitHub Metadata Resolution (no AI)
 
-When a user selects `🐙 GitHub` type, the bot fetches real metadata via GitHub API:
+When a user selects `🛠 Tool` for a GitHub URL, the bot fetches real metadata via GitHub API:
 - `title` → actual repository name (not URL slug)
 - `description` → repo description
 - `language` → primary programming language
