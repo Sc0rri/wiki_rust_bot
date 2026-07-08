@@ -150,16 +150,11 @@ impl TelegramService {
             );
         }
 
-        let mut keyboard = serde_json::json!(buttons);
-        keyboard
-            .as_object_mut()
-            .unwrap()
-            .insert("one_time_keyboard".to_string(), serde_json::json!(true));
-        keyboard
-            .as_object_mut()
-            .unwrap()
-            .insert("resize_keyboard".to_string(), serde_json::json!(true));
-        keyboard
+        serde_json::json!({
+            "keyboard": buttons,
+            "one_time_keyboard": true,
+            "resize_keyboard": true
+        })
     }
 
     pub fn confirm_ai_keyboard() -> serde_json::Value {
