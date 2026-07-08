@@ -1,6 +1,7 @@
 use crate::state::{ContentStatus, KnowledgeType, PendingItem, ResourceProvider};
 use crate::parser::ParserService;
 use crate::get_env_or_secret;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use worker::*;
 
 pub struct GitHubService;
@@ -17,7 +18,7 @@ impl GitHubService {
         let path = format!("inbox/pending/{}", filename);
         
         let content = Self::generate_yaml(item);
-        let content_base64 = base64::encode(&content);
+        let content_base64 = STANDARD.encode(&content);
 
         let url = format!(
             "https://api.github.com/repos/{}/contents/{}",

@@ -4,7 +4,7 @@ use crate::detector::Detector;
 use crate::github::GitHubService;
 use crate::parser::ParserService;
 use crate::resolver::Resolver;
-use crate::state::{ContentStatus, KnowledgeType, PendingItem, ResourceProvider, TextTransition, UserState};
+use crate::state::{PendingItem, ResourceProvider, TextTransition, UserState};
 use crate::telegram::{TelegramService, Update};
 use crate::{get_env_or_secret, log_event};
 use worker::*;
@@ -216,7 +216,7 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
                 item.status = status;
                 let state = UserState::AwaitingRating { item };
                 save_state(&kv, &state_key, &state).await?;
-                TelegramService::send_message(&bot_token, chat_id, "Rate 1-10 or skip:", Some(TelegramService::remove_keyboard())).await?;
+                TelegramService::send_message(&bot_token, chat_id, "Rate 1-10 or skip:", Some(TelegramService::skip_keyboard())).await?;
             }
         }
         TextTransition::SetRating(rating) => {
@@ -224,7 +224,7 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
                 item.rating = Some(rating);
                 let state = UserState::AwaitingComment { item };
                 save_state(&kv, &state_key, &state).await?;
-                TelegramService::send_message(&bot_token, chat_id, "Add a comment or skip:", Some(TelegramService::remove_keyboard())).await?;
+                TelegramService::send_message(&bot_token, chat_id, "Add a comment or skip:", Some(TelegramService::skip_keyboard())).await?;
             }
         }
         TextTransition::SetComment(comment) => {
@@ -270,9 +270,6 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
         TextTransition::ProcessFresh => {
             delete_state(&kv, &state_key, chat_id).await?;
             process_fresh(env, &bot_token, &dedup_kv, chat_id, &text).await?;
-        }
-        TextTransition::Expired => {
-            TelegramService::send_message(&bot_token, chat_id, "⏰ Draft expired. Please start over.", Some(TelegramService::remove_keyboard())).await?;
         }
     }
 

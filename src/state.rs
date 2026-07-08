@@ -143,7 +143,6 @@ pub enum TextTransition {
     ConfirmAi,
     Confirm,
     ProcessFresh,
-    Expired,
 }
 
 impl KnowledgeType {
@@ -282,14 +281,14 @@ impl UserState {
                         return TextTransition::SetRating(rating);
                     }
                 }
-                if lower == "skip" || lower == "пропустить" || lower == "далее" {
+                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее" {
                     TextTransition::Confirm
                 } else {
                     TextTransition::ProcessFresh
                 }
             }
             Self::AwaitingComment { .. } => {
-                if lower == "skip" || lower == "пропустить" || lower == "далее" {
+                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее" {
                     TextTransition::Confirm
                 } else {
                     TextTransition::SetComment(text.to_string())

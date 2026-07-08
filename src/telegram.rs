@@ -19,7 +19,6 @@ pub const BTN_OTHER: &str = "📋 Other";
 pub const BTN_BACKLOG: &str = "📋 Backlog";
 pub const BTN_DONE: &str = "✅ Done";
 pub const BTN_DROPPED: &str = "❌ Dropped";
-pub const BTN_SHELVED: &str = "📚 Shelved";
 
 // Common buttons
 pub const BTN_CANCEL: &str = "❌ Cancel";
@@ -194,6 +193,17 @@ impl TelegramService {
                     {"text": BTN_CONFIRM},
                     {"text": BTN_CANCEL}
                 ]
+            ],
+            "one_time_keyboard": true,
+            "resize_keyboard": true
+        })
+    }
+
+    pub fn skip_keyboard() -> serde_json::Value {
+        serde_json::json!({
+            "keyboard": [
+                [{"text": BTN_SKIP}],
+                [{"text": BTN_CANCEL}]
             ],
             "one_time_keyboard": true,
             "resize_keyboard": true
