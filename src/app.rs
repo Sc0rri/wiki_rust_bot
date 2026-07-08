@@ -4,7 +4,7 @@ use crate::detector::Detector;
 use crate::github::GitHubService;
 use crate::parser::ParserService;
 use crate::resolver::Resolver;
-use crate::state::{PendingItem, ResourceProvider, TextTransition, UserState};
+use crate::state::{KnowledgeType, PendingItem, ResourceProvider, TextTransition, UserState};
 use crate::telegram::{TelegramService, Update};
 use crate::{get_env_or_secret, log_event};
 use worker::*;
@@ -296,14 +296,63 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
 async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStore, chat_id: i64, text: &str) -> Result<()> {
     if ParserService::is_url(text) {
         let detected = Detector::detect(text);
-        TelegramService::send_message(bot_token, chat_id, &detected.preview_text(), Some(TelegramService::type_keyboard())).await?;
-        let kv = env.kv("STATE_STORE")?;
-        let state = UserState::AwaitingType {
-            raw_text: text.to_string(),
-            detected: Some(detected),
-            media_file_id: None,
+        
+        // Auto-detect type for obvious providers (GitHub → Tool, YouTube → Movie)
+        let auto_type = if detected.provider == ResourceProvider::Github {
+            Some(KnowledgeType::Tool)
+        } else if detected.provider == ResourceProvider::Youtube {
+            Some(KnowledgeType::Movie)
+        } else {
+            None
         };
-        save_state(&kv, &format!("{}_state", chat_id), &state).await?;
+        
+        if let Some(kt) = auto_type {
+            // Skip type selection, go straight to status
+            let mut item = PendingItem::new(
+                detected.title.clone().unwrap_or_else(|| format!("{} link", detected.provider.label())),
+                kt.clone()
+            );
+            item.source = "telegram".to_string();
+            item.provider = detected.provider.clone();
+            item.url = Some(detected.url.clone());
+            item.description = detected.description.clone();
+            
+            // Enrich GitHub repos with real metadata
+            if item.provider == ResourceProvider::Github {
+                if let Some(ref url) = item.url {
+                    if let Some(owner_repo) = Resolver::parse_github_url(url) {
+                        match Resolver::resolve_github(&env, &owner_repo).await {
+                            Ok(Some(resolved)) => {
+                                item.title = resolved.title;
+                                item.description = resolved.description.or(item.description);
+                                item.language = resolved.language;
+                                item.stars = resolved.stars;
+                                if !resolved.tags.is_empty() {
+                                    item.tags.extend(resolved.tags);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            
+            let status_kb = TelegramService::status_keyboard(&kt);
+            let state = UserState::AwaitingStatus { item };
+            let kv = env.kv("STATE_STORE")?;
+            save_state(&kv, &format!("{}_state", chat_id), &state).await?;
+            TelegramService::send_message(bot_token, chat_id, &format!("{} Status?", kt.emoji()), Some(status_kb)).await?;
+        } else {
+            // Ask user to pick type
+            TelegramService::send_message(bot_token, chat_id, &detected.preview_text(), Some(TelegramService::type_keyboard())).await?;
+            let kv = env.kv("STATE_STORE")?;
+            let state = UserState::AwaitingType {
+                raw_text: text.to_string(),
+                detected: Some(detected),
+                media_file_id: None,
+            };
+            save_state(&kv, &format!("{}_state", chat_id), &state).await?;
+        }
     } else {
         // Issue 2 + 4: Use AI to analyze text-only input, then ask user to confirm
         match AiService::analyze_content(&env, text).await {

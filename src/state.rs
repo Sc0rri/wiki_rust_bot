@@ -291,7 +291,7 @@ impl UserState {
             }
             Self::AwaitingComment { .. } => {
                 if lower.contains("skip") || lower.contains("пропустить") || lower == "далее" {
-                    TextTransition::Confirm
+                    TextTransition::SetComment(String::new())
                 } else {
                     TextTransition::SetComment(text.to_string())
                 }

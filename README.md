@@ -98,17 +98,11 @@ curl -F "url=https://<YOUR_WORKER_URL>/webhook" \
 
 ```
 User: https://github.com/tokio-rs/tokio
-Bot: 🔗 GitHub: tokio-rs/tokio
-     What type?
-     [📚 Book]  [🎬 Movie]
-     [📺 Series] [🎌 Anime]
-     [📄 Article] [🎓 Course]
-     [🐙 GitHub] [▶️ YouTube]
-     [🛠 Tool]   [📝 Note]
-     [📋 Other]
+Bot: 🛠 Status?
+     [📋 Backlog] [✅ Done]
+     [❌ Dropped] [❌ Cancel]
 
-User: 🐙 GitHub
-Bot: Resolving via GitHub API...
+User: ✅ Done
 Bot: 🐙 tokio
      📝 An event-driven, non-blocking I/O platform for Rust
      🔤 Rust | ⭐ 32000
@@ -165,14 +159,7 @@ If AI misidentifies the type — user just taps the correct button instead of Co
 
 ```
 User: https://youtu.be/xxxxx
-Bot: 🔗 YouTube: (video)
-     What type?
-     [📚 Book]  [🎬 Movie]
-     ...
-     [▶️ YouTube]
-     
-User: ▶️ YouTube
-Bot: ▶️ Status?
+Bot: 🎬 Status?
      [📋 To-watch] [✅ Watched]
      [❌ Dropped] [❌ Cancel]
 ```
