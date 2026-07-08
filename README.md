@@ -94,11 +94,11 @@ curl -F "url=https://<YOUR_WORKER_URL>/webhook" \
 
 ## 📖 Usage
 
-### Send a GitHub link (with API metadata enrichment)
+### Send a GitHub link (auto-detected as GitHub)
 
 ```
 User: https://github.com/tokio-rs/tokio
-Bot: 🛠 Status?
+Bot: 🐙 Status?
      [📋 Backlog] [✅ Done]
      [❌ Dropped] [❌ Cancel]
 
@@ -106,12 +106,8 @@ User: ✅ Done
 Bot: 🐙 tokio
      📝 An event-driven, non-blocking I/O platform for Rust
      🔤 Rust | ⭐ 32000
-     📌 Status?
-     [📋 Backlog] [✅ Done]
-     [❌ Dropped] [❌ Cancel]
-
-User: ✅ Done
-Bot: Rate 1-10 or skip:
+     📌 Status: Using
+     Rate 1-10 or skip:
 
 User: ⏭ Skip
 Bot: Add a comment or skip:
@@ -203,6 +199,32 @@ processed: false
 ---
 ```
 
+## 🎯 Content Types & Statuses
+
+### Statuses (context-aware labels)
+
+| Status | Book | Movie/Series/Anime | Course | GitHub | Tool | Generic |
+|--------|------|-------------------|--------|--------|------|---------|
+| 📋 Backlog | To-read | To-watch | Planned | Backlog | Backlog | Backlog |
+| ✅ Done | Read | Watched | Finished | Using | Using | Done |
+| ❌ Dropped | Dropped | Dropped | Dropped | Dropped | Dropped | Dropped |
+
+### Content Types
+
+| Type | Button |
+|------|--------|
+| 📚 Book | Book |
+| 🎬 Movie | Movie |
+| 📺 Series | Series |
+| 🎌 Anime | Anime |
+| 📄 Article | Article |
+| 🎓 Course | Course |
+| 🐙 GitHub | GitHub |
+| ▶️ YouTube | YouTube |
+| 🛠 Tool | Tool |
+| 📝 Note | Note |
+| 📋 Other | Other |
+
 ### AI Analysis Details
 
 - **JSON Schema mode**: Workers AI `response_format` with `json_schema` guarantees valid structured output — no manual JSON parsing
@@ -213,7 +235,7 @@ processed: false
 
 ### GitHub Metadata Resolution (no AI)
 
-When a user selects `🐙 GitHub` type, the bot fetches real metadata via GitHub API:
+When a user sends a GitHub link, the bot fetches real metadata via GitHub API:
 - `title` → actual repository name (not URL slug)
 - `description` → repo description
 - `language` → primary programming language

@@ -36,6 +36,7 @@ pub enum KnowledgeType {
     Anime,
     Article,
     Course,
+    GithubRepo,
     Tool,
     Note,
     Other,
@@ -153,6 +154,7 @@ impl KnowledgeType {
             Self::Anime => "🎌",
             Self::Article => "📄",
             Self::Course => "🎓",
+            Self::GithubRepo => "🐙",
             Self::Tool => "🛠",
             Self::Note => "📝",
             Self::Other => "📋",
@@ -167,6 +169,7 @@ impl KnowledgeType {
             Self::Anime => "Anime",
             Self::Article => "Article",
             Self::Course => "Course",
+            Self::GithubRepo => "GitHub",
             Self::Tool => "Tool",
             Self::Note => "Note",
             Self::Other => "Other",
@@ -174,7 +177,7 @@ impl KnowledgeType {
     }
 
     pub fn has_status_options(&self) -> bool {
-        matches!(self, Self::Book | Self::Movie | Self::Series | Self::Anime | Self::Course | Self::Article | Self::Tool)
+        matches!(self, Self::Book | Self::Movie | Self::Series | Self::Anime | Self::Course | Self::Article | Self::GithubRepo | Self::Tool)
     }
 }
 
@@ -193,6 +196,7 @@ impl ContentStatus {
                 KnowledgeType::Movie | KnowledgeType::Series | KnowledgeType::Anime => "Watched",
                 KnowledgeType::Course => "Finished",
                 KnowledgeType::Tool => "Using",
+                KnowledgeType::GithubRepo => "Using",
                 _ => "Done",
             },
             Self::Dropped => "Dropped",
@@ -331,14 +335,17 @@ mod tests {
         let movie = KnowledgeType::Movie;
         let course = KnowledgeType::Course;
         let tool = KnowledgeType::Tool;
+        let github = KnowledgeType::GithubRepo;
         assert_eq!(ContentStatus::Backlog.label(&book), "To-read");
         assert_eq!(ContentStatus::Backlog.label(&movie), "To-watch");
         assert_eq!(ContentStatus::Backlog.label(&course), "Planned");
         assert_eq!(ContentStatus::Backlog.label(&tool), "Backlog");
+        assert_eq!(ContentStatus::Backlog.label(&github), "Backlog");
         assert_eq!(ContentStatus::Done.label(&book), "Read");
         assert_eq!(ContentStatus::Done.label(&movie), "Watched");
         assert_eq!(ContentStatus::Done.label(&course), "Finished");
         assert_eq!(ContentStatus::Done.label(&tool), "Using");
+        assert_eq!(ContentStatus::Done.label(&github), "Using");
         assert_eq!(ContentStatus::Dropped.label(&book), "Dropped");
     }
 
