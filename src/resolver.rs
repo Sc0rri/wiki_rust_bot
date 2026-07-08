@@ -43,7 +43,7 @@ impl Resolver {
             .map(|arr| arr.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect())
             .unwrap_or_default();
 
-        let mut item = PendingItem::new(name.to_string(), KnowledgeType::GithubRepo);
+        let mut item = PendingItem::new(name.to_string(), KnowledgeType::Tool);
         item.provider = ResourceProvider::Github;
         item.description = description.map(|s| s.to_string());
         item.language = language.map(|s| s.to_string());

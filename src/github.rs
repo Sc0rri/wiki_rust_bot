@@ -82,7 +82,7 @@ impl GitHubService {
         }
         
         yaml.push_str(&format!("type: {}\n", item.knowledge_type.label().to_lowercase()));
-        yaml.push_str(&format!("status: {}\n", item.status.label().to_lowercase()));
+        yaml.push_str(&format!("status: {}\n", item.status.label(&item.knowledge_type).to_lowercase()));
         yaml.push_str(&format!("title: \"{}\"\n", item.title.replace('"', "\\\"")));
         
         if let Some(ref author) = item.author {
@@ -134,7 +134,7 @@ mod tests {
         let mut item = PendingItem::new("Test Article".to_string(), KnowledgeType::Article);
         item.author = Some("Test Author".to_string());
         item.year = Some(2024);
-        item.status = ContentStatus::ToRead;
+        item.status = ContentStatus::Backlog;
         item.provider = ResourceProvider::Web;
         item.tags = vec!["rust".to_string(), "wasm".to_string()];
 
@@ -144,7 +144,7 @@ mod tests {
         assert!(yaml.contains("title: \"Test Article\""));
         assert!(yaml.contains("author: \"Test Author\""));
         assert!(yaml.contains("year: 2024"));
-        assert!(yaml.contains("status: to-read"));
+        assert!(yaml.contains("status: backlog"));
         assert!(yaml.contains("source: telegram"));
         assert!(yaml.contains("provider: web"));
         assert!(yaml.contains("tags:"));

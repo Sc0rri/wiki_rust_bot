@@ -36,8 +36,6 @@ pub enum KnowledgeType {
     Anime,
     Article,
     Course,
-    GithubRepo,
-    YoutubeVideo,
     Tool,
     Note,
     Other,
@@ -46,17 +44,10 @@ pub enum KnowledgeType {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ContentStatus {
-    ToRead,
-    Read,
-    ToWatch,
-    Watched,
-    Planned,
-    InProgress,
-    Finished,
+    Backlog,
+    Done,
     Dropped,
-    Using,
-    Library,
-    Interesting,
+    Shelved,
 }
 
 /// Detected resource from URL analysis (no business logic)
@@ -101,7 +92,7 @@ impl PendingItem {
             provider: ResourceProvider::Direct,
             url: None,
             knowledge_type,
-            status: ContentStatus::ToRead,
+            status: ContentStatus::Backlog,
             title,
             author: None,
             language: None,
@@ -164,8 +155,6 @@ impl KnowledgeType {
             Self::Anime => "🎌",
             Self::Article => "📄",
             Self::Course => "🎓",
-            Self::GithubRepo => "🐙",
-            Self::YoutubeVideo => "▶️",
             Self::Tool => "🛠",
             Self::Note => "📝",
             Self::Other => "📋",
@@ -180,8 +169,6 @@ impl KnowledgeType {
             Self::Anime => "Anime",
             Self::Article => "Article",
             Self::Course => "Course",
-            Self::GithubRepo => "GitHub",
-            Self::YoutubeVideo => "YouTube",
             Self::Tool => "Tool",
             Self::Note => "Note",
             Self::Other => "Other",
@@ -189,29 +176,31 @@ impl KnowledgeType {
     }
 
     pub fn has_status_options(&self) -> bool {
-        matches!(self, Self::Book | Self::Movie | Self::Series | Self::Anime | Self::Course | Self::Article | Self::GithubRepo | Self::Tool)
+        matches!(self, Self::Book | Self::Movie | Self::Series | Self::Anime | Self::Course | Self::Article | Self::Tool)
     }
 }
 
 impl ContentStatus {
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self, kt: &KnowledgeType) -> &'static str {
         match self {
-            Self::ToRead => "To-read",
-            Self::Read => "Read",
-            Self::ToWatch => "To-watch",
-            Self::Watched => "Watched",
-            Self::Planned => "Planned",
-            Self::InProgress => "In progress",
-            Self::Finished => "Finished",
+            Self::Backlog => match kt {
+                KnowledgeType::Book => "To-read",
+                KnowledgeType::Movie | KnowledgeType::Series | KnowledgeType::Anime => "To-watch",
+                KnowledgeType::Course => "Planned",
+                _ => "Backlog",
+            },
+            Self::Done => match kt {
+                KnowledgeType::Book => "Read",
+                KnowledgeType::Movie | KnowledgeType::Series | KnowledgeType::Anime => "Watched",
+                KnowledgeType::Course => "Finished",
+                _ => "Done",
+            },
             Self::Dropped => "Dropped",
-            Self::Using => "Using",
-            Self::Library => "Library",
-            Self::Interesting => "Interesting",
+            Self::Shelved => match kt {
+                KnowledgeType::Tool => "Using",
+                _ => "Interesting",
+            },
         }
-    }
-
-    pub fn is_done(&self) -> bool {
-        matches!(self, Self::Read | Self::Watched | Self::Finished | Self::Dropped)
     }
 }
 
@@ -266,10 +255,6 @@ impl UserState {
                     TextTransition::SelectType(KnowledgeType::Article)
                 } else if lower.contains("course") || lower.contains("курс") {
                     TextTransition::SelectType(KnowledgeType::Course)
-                } else if lower.contains("github") || lower.contains("репозиторий") {
-                    TextTransition::SelectType(KnowledgeType::GithubRepo)
-                } else if lower.contains("youtube") || lower.contains("видео") || lower.contains("ютуб") {
-                    TextTransition::SelectType(KnowledgeType::YoutubeVideo)
                 } else if lower.contains("tool") || lower.contains("инструмент") {
                     TextTransition::SelectType(KnowledgeType::Tool)
                 } else if lower.contains("note") || lower.contains("заметк") || lower.contains("idea") || lower.contains("идея") {
@@ -279,18 +264,14 @@ impl UserState {
                 }
             }
             Self::AwaitingStatus { .. } => {
-                if lower.contains("to-read") || lower.contains("to-watch") || lower.contains("planned") || lower.contains("отложен") {
-                    TextTransition::SelectStatus(ContentStatus::ToRead)
-                } else if lower.contains("read") || lower.contains("watched") || lower.contains("finished") || lower.contains("прочитан") || lower.contains("посмотрел") {
-                    TextTransition::SelectStatus(ContentStatus::Read)
+                if lower.contains("backlog") || lower.contains("to-read") || lower.contains("to-watch") || lower.contains("planned") || lower.contains("отложен") {
+                    TextTransition::SelectStatus(ContentStatus::Backlog)
+                } else if lower.contains("done") || lower.contains("read") || lower.contains("watched") || lower.contains("finished") || lower.contains("прочитан") || lower.contains("посмотрел") {
+                    TextTransition::SelectStatus(ContentStatus::Done)
                 } else if lower.contains("dropped") || lower.contains("бросил") {
                     TextTransition::SelectStatus(ContentStatus::Dropped)
-                } else if lower.contains("using") || lower.contains("использую") {
-                    TextTransition::SelectStatus(ContentStatus::Using)
-                } else if lower.contains("library") || lower.contains("библиотек") {
-                    TextTransition::SelectStatus(ContentStatus::Library)
-                } else if lower.contains("interesting") || lower.contains("интересн") {
-                    TextTransition::SelectStatus(ContentStatus::Interesting)
+                } else if lower.contains("shelved") || lower.contains("using") || lower.contains("interesting") || lower.contains("использую") || lower.contains("интересн") {
+                    TextTransition::SelectStatus(ContentStatus::Shelved)
                 } else {
                     TextTransition::ProcessFresh
                 }
@@ -340,15 +321,24 @@ mod tests {
     #[test]
     fn knowledge_type_emoji_should_return_correct_emoji() {
         assert_eq!(KnowledgeType::Book.emoji(), "📚");
-        assert_eq!(KnowledgeType::GithubRepo.emoji(), "🐙");
-        assert_eq!(KnowledgeType::YoutubeVideo.emoji(), "▶️");
+        assert_eq!(KnowledgeType::Tool.emoji(), "🛠");
     }
 
     #[test]
     fn content_status_label_should_return_correct_label() {
-        assert_eq!(ContentStatus::ToRead.label(), "To-read");
-        assert_eq!(ContentStatus::Watched.label(), "Watched");
-        assert_eq!(ContentStatus::InProgress.label(), "In progress");
+        let book = KnowledgeType::Book;
+        let movie = KnowledgeType::Movie;
+        let course = KnowledgeType::Course;
+        let tool = KnowledgeType::Tool;
+        assert_eq!(ContentStatus::Backlog.label(&book), "To-read");
+        assert_eq!(ContentStatus::Backlog.label(&movie), "To-watch");
+        assert_eq!(ContentStatus::Backlog.label(&course), "Planned");
+        assert_eq!(ContentStatus::Done.label(&book), "Read");
+        assert_eq!(ContentStatus::Done.label(&movie), "Watched");
+        assert_eq!(ContentStatus::Done.label(&course), "Finished");
+        assert_eq!(ContentStatus::Dropped.label(&book), "Dropped");
+        assert_eq!(ContentStatus::Shelved.label(&tool), "Using");
+        assert_eq!(ContentStatus::Shelved.label(&book), "Interesting");
     }
 
     #[test]
@@ -357,5 +347,6 @@ mod tests {
         assert!(!item.id.is_empty());
         assert_eq!(item.source, "telegram");
         assert!(!item.processed);
+        assert_eq!(item.status, ContentStatus::Backlog);
     }
 }

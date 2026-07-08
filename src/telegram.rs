@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use worker::*;
 
+use crate::state::ContentStatus;
 use crate::state::KnowledgeType;
 
 // Type buttons
@@ -10,24 +11,15 @@ pub const BTN_SERIES: &str = "📺 Series";
 pub const BTN_ANIME: &str = "🎌 Anime";
 pub const BTN_ARTICLE: &str = "📄 Article";
 pub const BTN_COURSE: &str = "🎓 Course";
-pub const BTN_GITHUB: &str = "🐙 GitHub";
-pub const BTN_YOUTUBE: &str = "▶️ YouTube";
 pub const BTN_TOOL: &str = "🛠 Tool";
 pub const BTN_NOTE: &str = "📝 Note";
 pub const BTN_OTHER: &str = "📋 Other";
 
 // Status buttons
-pub const BTN_TO_READ: &str = "📋 To-read";
-pub const BTN_READ: &str = "✅ Read";
-pub const BTN_TO_WATCH: &str = "📋 To-watch";
-pub const BTN_WATCHED: &str = "✅ Watched";
-pub const BTN_PLANNED: &str = "📋 Planned";
-pub const BTN_IN_PROGRESS: &str = "▶ In progress";
-pub const BTN_FINISHED: &str = "✅ Finished";
+pub const BTN_BACKLOG: &str = "📋 Backlog";
+pub const BTN_DONE: &str = "✅ Done";
 pub const BTN_DROPPED: &str = "❌ Dropped";
-pub const BTN_USING: &str = "⭐ Using";
-pub const BTN_LIBRARY: &str = "📚 Library";
-pub const BTN_INTERESTING: &str = "💡 Interesting";
+pub const BTN_SHELVED: &str = "📚 Shelved";
 
 // Common buttons
 pub const BTN_CANCEL: &str = "❌ Cancel";
@@ -123,10 +115,6 @@ impl TelegramService {
                     {"text": BTN_COURSE}
                 ],
                 [
-                    {"text": BTN_GITHUB},
-                    {"text": BTN_YOUTUBE}
-                ],
-                [
                     {"text": BTN_TOOL},
                     {"text": BTN_NOTE}
                 ],
@@ -140,48 +128,27 @@ impl TelegramService {
     }
 
     pub fn status_keyboard(knowledge_type: &KnowledgeType) -> serde_json::Value {
-        let buttons: Vec<Vec<serde_json::Value>> = match knowledge_type {
-            KnowledgeType::Book => vec![
-                vec![
-                    serde_json::json!({"text": BTN_TO_READ}),
-                    serde_json::json!({"text": BTN_READ})
-                ],
-                vec![
-                    serde_json::json!({"text": BTN_DROPPED}),
-                    serde_json::json!({"text": BTN_CANCEL})
-                ]
+        let shelved_label = ContentStatus::Shelved.label(knowledge_type);
+        let shelved_btn = format!("📚 {}", shelved_label);
+
+        let mut buttons: Vec<Vec<serde_json::Value>> = vec![
+            vec![
+                serde_json::json!({"text": BTN_BACKLOG}),
+                serde_json::json!({"text": BTN_DONE}),
             ],
-            KnowledgeType::Movie | KnowledgeType::Series | KnowledgeType::Anime | KnowledgeType::YoutubeVideo => vec![
-                vec![
-                    serde_json::json!({"text": BTN_TO_WATCH}),
-                    serde_json::json!({"text": BTN_WATCHED})
-                ],
-                vec![
-                    serde_json::json!({"text": BTN_DROPPED}),
-                    serde_json::json!({"text": BTN_CANCEL})
-                ]
+            vec![
+                serde_json::json!({"text": BTN_DROPPED}),
+                serde_json::json!({"text": BTN_CANCEL}),
             ],
-            KnowledgeType::Course => vec![
-                vec![
-                    serde_json::json!({"text": BTN_PLANNED}),
-                    serde_json::json!({"text": BTN_IN_PROGRESS}),
-                    serde_json::json!({"text": BTN_FINISHED})
-                ],
-                vec![
-                    serde_json::json!({"text": BTN_DROPPED}),
-                    serde_json::json!({"text": BTN_CANCEL})
-                ]
-            ],
-            KnowledgeType::GithubRepo | KnowledgeType::Tool => vec![
-                vec![
-                    serde_json::json!({"text": BTN_USING}),
-                    serde_json::json!({"text": BTN_LIBRARY}),
-                    serde_json::json!({"text": BTN_INTERESTING})
-                ],
-                vec![serde_json::json!({"text": BTN_CANCEL})]
-            ],
-            _ => vec![vec![serde_json::json!({"text": BTN_CANCEL})]]
-        };
+        ];
+
+        // Add Shelved row for Tool and provider-based types
+        if knowledge_type.has_status_options() && *knowledge_type != KnowledgeType::Course {
+            buttons.insert(
+                1,
+                vec![serde_json::json!({"text": shelved_btn})],
+            );
+        }
 
         let mut keyboard = serde_json::json!(buttons);
         keyboard
@@ -210,10 +177,6 @@ impl TelegramService {
                 [
                     {"text": BTN_ARTICLE},
                     {"text": BTN_COURSE}
-                ],
-                [
-                    {"text": BTN_GITHUB},
-                    {"text": BTN_YOUTUBE}
                 ],
                 [
                     {"text": BTN_TOOL},

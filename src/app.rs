@@ -4,7 +4,7 @@ use crate::detector::Detector;
 use crate::github::GitHubService;
 use crate::parser::ParserService;
 use crate::resolver::Resolver;
-use crate::state::{ContentStatus, KnowledgeType, PendingItem, TextTransition, UserState};
+use crate::state::{ContentStatus, KnowledgeType, PendingItem, ResourceProvider, TextTransition, UserState};
 use crate::telegram::{TelegramService, Update};
 use crate::{get_env_or_secret, log_event};
 use worker::*;
@@ -178,7 +178,7 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
 
             // Enrich GitHub repos with real metadata (stars/language/topics) via API
             // instead of relying on the URL-guessed title.
-            if kt == KnowledgeType::GithubRepo {
+            if item.provider == ResourceProvider::Github {
                 if let Some(ref url) = item.url {
                     if let Some(owner_repo) = Resolver::parse_github_url(url) {
                         match Resolver::resolve_github(&env, &owner_repo).await {
@@ -341,7 +341,7 @@ fn build_preview(item: &PendingItem) -> String {
     let mut preview = format!("{} {}\n", item.knowledge_type.emoji(), item.title);
     if let Some(ref url) = item.url { preview.push_str(&format!("🔗 {}\n", url)); }
     if item.provider.label() != "" { preview.push_str(&format!("📦 {}\n", item.provider.label())); }
-    preview.push_str(&format!("📌 Status: {}\n", item.status.label()));
+    preview.push_str(&format!("📌 Status: {}\n", item.status.label(&item.knowledge_type)));
     if let Some(r) = item.rating { preview.push_str(&format!("⭐ {}/10\n", r)); }
     if let Some(ref c) = item.comment { preview.push_str(&format!("💬 \"{}\"\n", c)); }
     preview.push_str("\nSave?");
