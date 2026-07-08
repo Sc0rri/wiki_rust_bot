@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use worker::*;
 
-use crate::state::ContentStatus;
 use crate::state::KnowledgeType;
 
 // Type buttons
@@ -126,31 +125,18 @@ impl TelegramService {
         })
     }
 
-    pub fn status_keyboard(knowledge_type: &KnowledgeType) -> serde_json::Value {
-        let shelved_label = ContentStatus::Shelved.label(knowledge_type);
-        let shelved_btn = format!("📚 {}", shelved_label);
-
-        let mut buttons: Vec<Vec<serde_json::Value>> = vec![
-            vec![
-                serde_json::json!({"text": BTN_BACKLOG}),
-                serde_json::json!({"text": BTN_DONE}),
-            ],
-            vec![
-                serde_json::json!({"text": BTN_DROPPED}),
-                serde_json::json!({"text": BTN_CANCEL}),
-            ],
-        ];
-
-        // Add Shelved row for Tool and provider-based types
-        if knowledge_type.has_status_options() && *knowledge_type != KnowledgeType::Course {
-            buttons.insert(
-                1,
-                vec![serde_json::json!({"text": shelved_btn})],
-            );
-        }
-
+    pub fn status_keyboard(_knowledge_type: &KnowledgeType) -> serde_json::Value {
         serde_json::json!({
-            "keyboard": buttons,
+            "keyboard": [
+                [
+                    {"text": BTN_BACKLOG},
+                    {"text": BTN_DONE}
+                ],
+                [
+                    {"text": BTN_DROPPED},
+                    {"text": BTN_CANCEL}
+                ]
+            ],
             "one_time_keyboard": true,
             "resize_keyboard": true
         })

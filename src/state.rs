@@ -47,7 +47,6 @@ pub enum ContentStatus {
     Backlog,
     Done,
     Dropped,
-    Shelved,
 }
 
 /// Detected resource from URL analysis (no business logic)
@@ -186,20 +185,23 @@ impl ContentStatus {
                 KnowledgeType::Book => "To-read",
                 KnowledgeType::Movie | KnowledgeType::Series | KnowledgeType::Anime => "To-watch",
                 KnowledgeType::Course => "Planned",
+                KnowledgeType::Tool => "Backlog",
                 _ => "Backlog",
             },
             Self::Done => match kt {
                 KnowledgeType::Book => "Read",
                 KnowledgeType::Movie | KnowledgeType::Series | KnowledgeType::Anime => "Watched",
                 KnowledgeType::Course => "Finished",
+                KnowledgeType::Tool => "Using",
                 _ => "Done",
             },
             Self::Dropped => "Dropped",
-            Self::Shelved => match kt {
-                KnowledgeType::Tool => "Using",
-                _ => "Interesting",
-            },
         }
+    }
+
+    /// Whether this status should prompt for a rating (only for completed/dropped items)
+    pub fn needs_rating(&self) -> bool {
+        matches!(self, Self::Done | Self::Dropped)
     }
 }
 
@@ -269,8 +271,8 @@ impl UserState {
                     TextTransition::SelectStatus(ContentStatus::Done)
                 } else if lower.contains("dropped") || lower.contains("бросил") {
                     TextTransition::SelectStatus(ContentStatus::Dropped)
-                } else if lower.contains("shelved") || lower.contains("using") || lower.contains("interesting") || lower.contains("использую") || lower.contains("интересн") {
-                    TextTransition::SelectStatus(ContentStatus::Shelved)
+                } else if lower.contains("using") || lower.contains("interesting") || lower.contains("использую") || lower.contains("интересн") {
+                    TextTransition::SelectStatus(ContentStatus::Done)
                 } else {
                     TextTransition::ProcessFresh
                 }
@@ -332,12 +334,12 @@ mod tests {
         assert_eq!(ContentStatus::Backlog.label(&book), "To-read");
         assert_eq!(ContentStatus::Backlog.label(&movie), "To-watch");
         assert_eq!(ContentStatus::Backlog.label(&course), "Planned");
+        assert_eq!(ContentStatus::Backlog.label(&tool), "Backlog");
         assert_eq!(ContentStatus::Done.label(&book), "Read");
         assert_eq!(ContentStatus::Done.label(&movie), "Watched");
         assert_eq!(ContentStatus::Done.label(&course), "Finished");
+        assert_eq!(ContentStatus::Done.label(&tool), "Using");
         assert_eq!(ContentStatus::Dropped.label(&book), "Dropped");
-        assert_eq!(ContentStatus::Shelved.label(&tool), "Using");
-        assert_eq!(ContentStatus::Shelved.label(&book), "Interesting");
     }
 
     #[test]

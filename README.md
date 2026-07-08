@@ -4,10 +4,10 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 
 ## ✨ Features
 
-- **📚 Multi-content support**: Books, Movies, Series, Anime, Articles, Courses, Tools, Notes
+- **📚 Multi-content support**: Books, Movies, Series, Anime, Articles, Courses, GitHub repos, YouTube videos, Tools, Notes
 - **🔗 Smart detection**: URL provider detection (GitHub, YouTube, Goodreads, arXiv, etc.) without AI
-- **🎯 Unified statuses**: Backlog/Done/Dropped/Shelved with context-aware labels (To-read/Read, To-watch/Watched, Planned/Finished, Using/Library)
-- **⭐ Rating & comments**: Rate 1-10 and add comments for consumed content
+- **🎯 Simple statuses**: Backlog, Done, Dropped — with context-aware labels (To-read/Read, To-watch/Watched, Planned/Finished, Using)
+- **⭐ Rating & comments**: Rate 1-10 and add comments for completed or dropped items
 - **🤖 AI-powered analysis** (JSON Schema mode): Cloudflare Workers AI extracts title, author, year, description, and tags with guaranteed structured output
 - **🔗 GitHub metadata resolution**: Fetches description, language, stars, and topics via GitHub API (no AI)
 - **💾 GitHub integration**: Saves to `<repository>/inbox/pending/` as flat YAML files
@@ -103,36 +103,36 @@ Bot: 🔗 GitHub: tokio-rs/tokio
      [📚 Book]  [🎬 Movie]
      [📺 Series] [🎌 Anime]
      [📄 Article] [🎓 Course]
+     [🐙 GitHub] [▶️ YouTube]
      [🛠 Tool]   [📝 Note]
      [📋 Other]
 
-User: 🛠 Tool
+User: 🐙 GitHub
 Bot: Resolving via GitHub API...
-Bot: 🛠 tokio
+Bot: 🐙 tokio
      📝 An event-driven, non-blocking I/O platform for Rust
      🔤 Rust | ⭐ 32000
      📌 Status?
      [📋 Backlog] [✅ Done]
-     [📚 Shelved] [❌ Dropped]
-     [❌ Cancel]
+     [❌ Dropped] [❌ Cancel]
 
-User: 📚 Library
+User: ✅ Done
 Bot: Rate 1-10 or skip:
 
 User: ⏭ Skip
 Bot: Add a comment or skip:
 
 User: Essential for async Rust
-Bot: 🛠 tokio
+Bot: 🐙 tokio
      🔤 Rust | ⭐ 32000
-     📌 Status: Library
+     📌 Status: Using
      💬 "Essential for async Rust"
      
      Save?
      [✅ Save] [❌ Cancel]
 
 User: ✅ Save
-Bot: ✅ Saved: inbox/pending/2026-07-07_tokio.yaml
+Bot: ✅ Saved: inbox/pending/2026-07-08_tokio.yaml
 ```
 
 ### Send a title (text input with AI analysis + human confirmation)
@@ -149,31 +149,32 @@ Bot: 🤖 Looks like: 📚 Book
      [📚 Book] [🎬 Movie]
      [📺 Series] [🎌 Anime]
      [📄 Article] [🎓 Course]
+     [🐙 GitHub] [▶️ YouTube]
      [🛠 Tool]   [📝 Note]
-     [📋 Other]  [❌ Cancel]
+     📋 Other    [❌ Cancel]
 
 User: ✅ Confirm
 Bot: 📚 Status?
      [📋 To-read] [✅ Read]
      [❌ Dropped] [❌ Cancel]
 
-User: 📋 To-read
+User: ✅ Read
 Bot: Rate 1-10 or skip:
 
-User: 8
+User: 9
 Bot: Add a comment or skip:
 
 User: ⏭ Skip
 Bot: 📚 Clean Architecture
      👤 Robert C. Martin
-     📌 Status: To-read
-     ⭐ 8/10
+     📌 Status: Read
+     ⭐ 9/10
      
      Save?
      [✅ Save] [❌ Cancel]
 
 User: ✅ Save
-Bot: ✅ Saved: inbox/pending/2026-07-07_clean-architecture.yaml
+Bot: ✅ Saved: inbox/pending/2026-07-08_clean-architecture.yaml
 ```
 
 If AI misidentifies the type — user just taps the correct button instead of Confirm.
@@ -185,13 +186,11 @@ User: https://youtu.be/xxxxx
 Bot: 🔗 YouTube: (video)
      What type?
      [📚 Book]  [🎬 Movie]
-     [📺 Series] [🎌 Anime]
-     [📄 Article] [🎓 Course]
-     [🛠 Tool]   [📝 Note]
-     [📋 Other]
+     ...
+     [▶️ YouTube]
      
-User: 🎬 Movie
-Bot: 🎬 Status?
+User: ▶️ YouTube
+Bot: ▶️ Status?
      [📋 To-watch] [✅ Watched]
      [❌ Dropped] [❌ Cancel]
 ```
@@ -203,10 +202,7 @@ User: (photo upload)
 Bot: 🖼 Image received
      What type?
      [📚 Book]  [🎬 Movie]
-     [📺 Series] [🎌 Anime]
-     [📄 Article] [🎓 Course]
-     [🛠 Tool]   [📝 Note]
-     [📋 Other]
+     ...
 ```
 
 ## 📁 Saved File Format (YAML)
@@ -216,18 +212,18 @@ Each item is saved as a flat YAML file under `inbox/pending/` with the filename 
 ```yaml
 ---
 id: 20260707153000-clean-architecture
-created: 2026-07-07
+created: 2026-07-08
 source: telegram
 provider: goodreads
 url: "https://www.goodreads.com/book/show/123"
 type: book
-status: to-read
+status: done
 title: "Clean Architecture"
 author: "Robert C. Martin"
 language: en
 year: 2017
 stars: null
-rating: 8
+rating: 9
 comment: "Great book on software architecture"
 description: "A guide to software design and architecture"
 tags:
@@ -240,26 +236,31 @@ processed: false
 
 ## 🎯 Content Types & Statuses
 
-| Type | Available Statuses |
-|------|-------------------|
-| 📚 Book | To-read, Read, Dropped |
-| 🎬 Movie | To-watch, Watched, Dropped |
-| 📺 Series | To-watch, Watched, Dropped |
-| 🎌 Anime | To-watch, Watched, Dropped |
-| 📄 Article | To-read, Read, Dropped |
-| 🎓 Course | Planned, In progress, Finished, Dropped |
-| 🛠 Tool | Backlog, Done, Dropped, Shelved |
-| 📝 Note | Confirm/save directly |
-| 📋 Other | Saved directly |
+### Statuses (context-aware labels)
 
-### Status Reference
+| Status | Book | Movie/Series/Anime | Course | Tool | Generic |
+|--------|------|-------------------|--------|------|---------|
+| 📋 Backlog | To-read | To-watch | Planned | Backlog | Backlog |
+| ✅ Done | Read | Watched | Finished | Using | Done |
+| ❌ Dropped | Dropped | Dropped | Dropped | Dropped | Dropped |
 
-| Status | Book | Movie/Series/Anime | Course | Tool |
-|--------|------|-------------------|--------|------|
-| Backlog | To-read | To-watch | Planned | Backlog |
-| Done | Read | Watched | Finished | Done |
-| Dropped | Dropped | Dropped | Dropped | Dropped |
-| Shelved | Interesting | Interesting | — | Using |
+**Rating is only asked for Done and Dropped** — Backlog items skip directly to comment.
+
+### Content Types
+
+| Type | Button |
+|------|--------|
+| 📚 Book | Book |
+| 🎬 Movie | Movie |
+| 📺 Series | Series |
+| 🎌 Anime | Anime |
+| 📄 Article | Article |
+| 🎓 Course | Course |
+| 🐙 GitHub | GitHub |
+| ▶️ YouTube | YouTube |
+| 🛠 Tool | Tool |
+| 📝 Note | Note |
+| 📋 Other | Other |
 
 ### AI Analysis Details
 
@@ -271,7 +272,7 @@ processed: false
 
 ### GitHub Metadata Resolution (no AI)
 
-When a user selects `🛠 Tool` for a GitHub URL, the bot fetches real metadata via GitHub API:
+When a user selects `🐙 GitHub` type, the bot fetches real metadata via GitHub API:
 - `title` → actual repository name (not URL slug)
 - `description` → repo description
 - `language` → primary programming language

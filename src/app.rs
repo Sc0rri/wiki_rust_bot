@@ -242,9 +242,15 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
         TextTransition::SelectStatus(status) => {
             if let UserState::AwaitingStatus { mut item } = state {
                 item.status = status;
-                let state = UserState::AwaitingRating { item };
-                save_state(&kv, &state_key, &state).await?;
-                TelegramService::send_message(&bot_token, chat_id, "Rate 1-10 or skip:", Some(TelegramService::skip_keyboard())).await?;
+                if item.status.needs_rating() {
+                    let state = UserState::AwaitingRating { item };
+                    save_state(&kv, &state_key, &state).await?;
+                    TelegramService::send_message(&bot_token, chat_id, "Rate 1-10 or skip:", Some(TelegramService::skip_keyboard())).await?;
+                } else {
+                    let state = UserState::AwaitingComment { item };
+                    save_state(&kv, &state_key, &state).await?;
+                    TelegramService::send_message(&bot_token, chat_id, "Add a comment or skip:", Some(TelegramService::skip_keyboard())).await?;
+                }
             }
         }
         TextTransition::SetRating(rating) => {
