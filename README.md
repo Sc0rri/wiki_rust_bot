@@ -216,34 +216,6 @@ processed: false
 ---
 ```
 
-## 🎯 Content Types & Statuses
-
-### Statuses (context-aware labels)
-
-| Status | Book | Movie/Series/Anime | Course | Tool | Generic |
-|--------|------|-------------------|--------|------|---------|
-| 📋 Backlog | To-read | To-watch | Planned | Backlog | Backlog |
-| ✅ Done | Read | Watched | Finished | Using | Done |
-| ❌ Dropped | Dropped | Dropped | Dropped | Dropped | Dropped |
-
-**Rating is only asked for Done and Dropped** — Backlog items skip directly to comment.
-
-### Content Types
-
-| Type | Button |
-|------|--------|
-| 📚 Book | Book |
-| 🎬 Movie | Movie |
-| 📺 Series | Series |
-| 🎌 Anime | Anime |
-| 📄 Article | Article |
-| 🎓 Course | Course |
-| 🐙 GitHub | GitHub |
-| ▶️ YouTube | YouTube |
-| 🛠 Tool | Tool |
-| 📝 Note | Note |
-| 📋 Other | Other |
-
 ### AI Analysis Details
 
 - **JSON Schema mode**: Workers AI `response_format` with `json_schema` guarantees valid structured output — no manual JSON parsing
