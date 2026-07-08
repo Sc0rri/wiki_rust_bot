@@ -67,6 +67,16 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
             return Ok(());
         }
 
+        if text.starts_with('/') {
+            let env_clone = env.clone();
+            ctx.wait_until(async move {
+                if let Err(e) = handle_command(env_clone, chat_id, &text).await {
+                    log_event!("error", "telegram.command.failed", "error={:?}", e);
+                }
+            });
+            return Ok(());
+        }
+
         log_event!("info", "telegram.text.received", "chat_id={} text={}", chat_id, text.chars().count());
         let env_clone = env.clone();
         ctx.wait_until(async move {
@@ -81,6 +91,24 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
 
 fn username_is_allowed(username: Option<&String>, allowed: &str) -> bool {
     username.map(|u| u.as_str()).unwrap_or_default() == allowed
+}
+
+async fn handle_command(env: Env, chat_id: i64, text: &str) -> Result<()> {
+    let bot_token = env.secret("BOT_TOKEN")?.to_string();
+    let command = text.split_whitespace().next().unwrap_or("").to_lowercase();
+
+    let reply: &str = match command.as_str() {
+        "/start" => "👋 Send a link, a photo, a PDF, or just type something to add it to your wiki inbox.",
+        "/cancel" => {
+            let kv = env.kv("STATE_STORE")?;
+            delete_state(&kv, &format!("{}_state", chat_id), chat_id).await?;
+            "❌ Cancelled."
+        }
+        _ => "Unknown command. Try /start.",
+    };
+
+    TelegramService::send_message(&bot_token, chat_id, reply, Some(TelegramService::remove_keyboard())).await?;
+    Ok(())
 }
 
 async fn handle_media(env: Env, chat_id: i64, media_type: &str, file_id: &str) -> Result<()> {
