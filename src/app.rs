@@ -264,10 +264,8 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
         TextTransition::SetComment(comment) => {
             if let UserState::AwaitingComment { mut item } = state {
                 item.comment = Some(comment);
-                let preview = build_preview(&item);
-                TelegramService::send_message(&bot_token, chat_id, &preview, Some(TelegramService::confirm_keyboard())).await?;
-                let state = UserState::AwaitingConfirmation { item };
-                save_state(&kv, &state_key, &state).await?;
+                delete_state(&kv, &state_key, chat_id).await?;
+                save_and_finish(env, &bot_token, &dedup_kv, chat_id, item).await?;
             }
         }
         TextTransition::ConfirmAi => {
@@ -284,22 +282,7 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
             }
         }
         TextTransition::Confirm => {
-            if let UserState::AwaitingConfirmation { item } = state {
-                delete_state(&kv, &state_key, chat_id).await?;
-                save_and_finish(env, &bot_token, &dedup_kv, chat_id, item).await?;
-            } else if let UserState::AwaitingRating { item } = state {
-                delete_state(&kv, &state_key, chat_id).await?;
-                let preview = build_preview(&item);
-                TelegramService::send_message(&bot_token, chat_id, &preview, Some(TelegramService::confirm_keyboard())).await?;
-                let state = UserState::AwaitingConfirmation { item };
-                save_state(&kv, &state_key, &state).await?;
-            } else if let UserState::AwaitingComment { item } = state {
-                delete_state(&kv, &state_key, chat_id).await?;
-                let preview = build_preview(&item);
-                TelegramService::send_message(&bot_token, chat_id, &preview, Some(TelegramService::confirm_keyboard())).await?;
-                let state = UserState::AwaitingConfirmation { item };
-                save_state(&kv, &state_key, &state).await?;
-            }
+            // No-op: confirmation step removed, items save immediately after comment
         }
         TextTransition::ProcessFresh => {
             delete_state(&kv, &state_key, chat_id).await?;
@@ -375,7 +358,6 @@ fn build_preview(item: &PendingItem) -> String {
     preview.push_str(&format!("📌 Status: {}\n", item.status.label(&item.knowledge_type)));
     if let Some(r) = item.rating { preview.push_str(&format!("⭐ {}/10\n", r)); }
     if let Some(ref c) = item.comment { preview.push_str(&format!("💬 \"{}\"\n", c)); }
-    preview.push_str("\nSave?");
     preview
 }
 

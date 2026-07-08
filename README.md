@@ -123,15 +123,6 @@ User: ⏭ Skip
 Bot: Add a comment or skip:
 
 User: Essential for async Rust
-Bot: 🐙 tokio
-     🔤 Rust | ⭐ 32000
-     📌 Status: Using
-     💬 "Essential for async Rust"
-     
-     Save?
-     [✅ Save] [❌ Cancel]
-
-User: ✅ Save
 Bot: ✅ Saved: inbox/pending/2026-07-08_tokio.yaml
 ```
 
@@ -165,15 +156,6 @@ User: 9
 Bot: Add a comment or skip:
 
 User: ⏭ Skip
-Bot: 📚 Clean Architecture
-     👤 Robert C. Martin
-     📌 Status: Read
-     ⭐ 9/10
-     
-     Save?
-     [✅ Save] [❌ Cancel]
-
-User: ✅ Save
 Bot: ✅ Saved: inbox/pending/2026-07-08_clean-architecture.yaml
 ```
 
