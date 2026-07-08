@@ -11,7 +11,7 @@ id = "9ca274fd5d074a63adc1e405ba90d065"
 
 [[kv_namespaces]]
 binding = "DEDUP_STORE"
-id = "9411f82ab9794a968bbfc75991fd6669"
+id = "f2a49aa4d3554be3b23a64d0605aef8c"
 
 [queues]
 binding = "WIKI_QUEUE"
