@@ -288,7 +288,7 @@ impl UserState {
                     }
                 }
                 if lower.contains("skip") || lower.contains("пропустить") || lower == "далее" {
-                    TextTransition::Confirm
+                    TextTransition::SetRating(0)  // 0 = skipped
                 } else {
                     TextTransition::ProcessFresh
                 }

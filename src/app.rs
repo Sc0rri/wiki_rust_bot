@@ -255,7 +255,7 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
         }
         TextTransition::SetRating(rating) => {
             if let UserState::AwaitingRating { mut item } = state {
-                item.rating = Some(rating);
+                item.rating = if rating == 0 { None } else { Some(rating) };
                 let state = UserState::AwaitingComment { item };
                 save_state(&kv, &state_key, &state).await?;
                 TelegramService::send_message(&bot_token, chat_id, "Add a comment or skip:", Some(TelegramService::skip_keyboard())).await?;
@@ -297,9 +297,9 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
     if ParserService::is_url(text) {
         let detected = Detector::detect(text);
         
-        // Auto-detect type for obvious providers (GitHub → Tool, YouTube → Movie)
+        // Auto-detect type for obvious providers (GitHub → GithubRepo, YouTube → Movie)
         let auto_type = if detected.provider == ResourceProvider::Github {
-            Some(KnowledgeType::Tool)
+            Some(KnowledgeType::GithubRepo)
         } else if detected.provider == ResourceProvider::Youtube {
             Some(KnowledgeType::Movie)
         } else {
