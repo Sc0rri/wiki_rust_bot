@@ -1,19 +1,22 @@
 # 🤖 Wiki LLM Bot
 
-A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send links or titles via Telegram — the bot detects the source, lets you choose type/status/rating/comment, and saves YAML files to a GitHub repository for later processing by Hermes.
+A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send links or titles via Telegram — the bot detects the source, lets you choose status/rating/comment, and saves YAML files to a GitHub repository for later processing by Hermes.
 
 ## ✨ Features
 
-- **📚 Multi-content support**: Books, Movies, Series, Anime, Articles, Courses, GitHub repos, YouTube videos, Tools, Notes
-- **🔗 Smart detection**: URL provider detection (GitHub, YouTube, Goodreads, arXiv, etc.) without AI
-- **🎯 Simple statuses**: Backlog, Done, Dropped — with context-aware labels (To-read/Read, To-watch/Watched, Planned/Finished, Using)
+- **📚 Multi-content support**: Books, Movies, Series, Anime, Links, Notes
+- **🔗 Smart detection**: URL provider detection (GitHub, YouTube, Goodreads, IMDb/Kinopoisk, arXiv, Coursera/Udemy/Stepik, Habr, Wikipedia, etc.) without AI
+- **🎯 Simple statuses**: Backlog, Done, Dropped — with context-aware labels (To-read/Read, To-watch/Watched)
+- **📺 Season tracking**: Series and Anime get an extra season prompt before rating
 - **⭐ Rating & comments**: Rate 1-10 and add comments for completed or dropped items
 - **🤖 AI-powered analysis** (JSON Schema mode): Cloudflare Workers AI extracts title, author, year, description, and tags with guaranteed structured output
 - **🔗 GitHub metadata resolution**: Fetches description, language, stars, and topics via GitHub API (no AI)
 - **💾 GitHub integration**: Saves to `<repository>/inbox/pending/` as flat YAML files
-- **🖼️ Media support**: Handles photo and PDF uploads with file_id tracking
-- **🔍 Deduplication**: Prevents duplicate entries via KV store
+- **🖼️ Media archiving**: Photos and PDFs are permanently saved to `<repository>/inbox/assets/` with metadata in inbox/pending/
+- **🔁 Forwarded messages**: Automatically saved as Notes without additional prompts
+- **🔍 Deduplication**: Prevents duplicate entries via KV store (by title and URL)
 - **⌨️ Button-based UI**: All interactions via Telegram reply keyboards
+- **🕒 Draft timeout**: State expires after 30 minutes — user is notified instead of silently reinterpreting old input
 
 ## 🏗 Architecture
 
@@ -23,8 +26,8 @@ Telegram → Cloudflare Worker
   ├── Detector (URL → provider/resource type)
   ├── Resolver (GitHub API → metadata, no AI)
   ├── Cloudflare AI (JSON Schema mode, temperature 0.15)
-  ├── Cloudflare Queue (async enrichment)
   └── GitHub API → <repository>/inbox/pending/
+          ├── <repository>/inbox/assets/  (for photos/PDFs)
           └── [Hermes] → LLM wiki
 ```
 
@@ -38,7 +41,7 @@ Telegram → Cloudflare Worker
     ├── lib.rs          # HTTP entry + module declarations
     ├── app.rs          # Webhook handler + state machine
     ├── telegram.rs     # Telegram API types + service
-    ├── github.rs       # GitHub commit to inbox/pending/
+    ├── github.rs       # GitHub commit to inbox/pending/ + inbox/assets/
     ├── ai.rs           # Cloudflare Workers AI (JSON Schema mode)
     ├── detector.rs     # URL → provider/resource type
     ├── resolver.rs     # Public API resolvers (GitHub API)
@@ -94,25 +97,17 @@ curl -F "url=https://<YOUR_WORKER_URL>/webhook" \
 
 ## 📖 Usage
 
-### Send a GitHub link (auto-detected as GitHub)
+### Send a GitHub link (auto-detected as Link with GitHub enrichment)
 
 ```
 User: https://github.com/tokio-rs/tokio
-Bot: 🐙 Status?
-     [📋 Backlog] [✅ Done]
-     [❌ Dropped] [❌ Cancel]
-
-User: ✅ Done
-Bot: 🐙 tokio
-     📝 An event-driven, non-blocking I/O platform for Rust
-     🔤 Rust | ⭐ 32000
-     📌 Status: Using
-     Rate 1-10 or skip:
+Bot: 🔗 tokio-rs/tokio
+     🔗 https://github.com/tokio-rs/tokio
+     📦 GitHub
+     ⭐ 32000 · Rust
+     Add a comment or skip:
 
 User: ⏭ Skip
-Bot: Add a comment or skip:
-
-User: Essential for async Rust
 Bot: ✅ Saved: inbox/pending/2026-07-08_tokio.yaml
 ```
 
@@ -129,10 +124,7 @@ Bot: 🤖 Looks like: 📚 Book
      [✅ Confirm]
      [📚 Book] [🎬 Movie]
      [📺 Series] [🎌 Anime]
-     [📄 Article] [🎓 Course]
-     [🐙 GitHub] [▶️ YouTube]
-     [🛠 Tool]   [📝 Note]
-     📋 Other    [❌ Cancel]
+     [📝 Note]  [❌ Cancel]
 
 User: ✅ Confirm
 Bot: 📚 Status?
@@ -155,20 +147,42 @@ If AI misidentifies the type — user just taps the correct button instead of Co
 
 ```
 User: https://youtu.be/xxxxx
-Bot: 🎬 Status?
-     [📋 To-watch] [✅ Watched]
-     [❌ Dropped] [❌ Cancel]
+Bot: 🔗 YouTube video
+     🔗 https://youtu.be/xxxxx
+     📦 YouTube
+     Add a comment or skip:
+
+User: ⏭ Skip
+Bot: ✅ Saved: inbox/pending/2026-07-08_youtube-video.yaml
 ```
 
 ### Send a photo or PDF
 
 ```
 User: (photo upload)
-Bot: 🖼 Image received
-     What type?
-     [📚 Book]  [🎬 Movie]
-     ...
+Bot: Add a comment or skip:
+     [⏭ Skip]
+     [❌ Cancel]
+
+User: Architecture diagram
+Bot: ✅ Saved: inbox/pending/2026-07-08_image-note.yaml
 ```
+
+The photo/PDF is permanently archived to `inbox/assets/YYYY-MM-DD_slug.{jpg|pdf}` in the same repo.
+
+### Send a forwarded message
+
+```
+User: (forwarded text)
+Bot: ✅ Saved: inbox/pending/2026-07-08_forwarded-note.yaml
+```
+
+### Commands
+
+| Command | Action |
+|---------|--------|
+| `/start` | Show welcome message |
+| `/cancel` | Cancel current draft and clear state |
 
 ## 📁 Saved File Format (YAML)
 
@@ -182,12 +196,10 @@ source: telegram
 provider: goodreads
 url: "https://www.goodreads.com/book/show/123"
 type: book
-status: done
+status: read
 title: "Clean Architecture"
 author: "Robert C. Martin"
-language: en
 year: 2017
-stars: null
 rating: 9
 comment: "Great book on software architecture"
 description: "A guide to software design and architecture"
@@ -199,38 +211,37 @@ processed: false
 ---
 ```
 
+Fields like `author`, `year`, `language`, `stars`, `rating`, `comment`, `description`, and `season` are omitted when empty.
+
 ## 🎯 Content Types & Statuses
+
+The bot recognizes five content types. Only **Book**, **Movie**, **Series**, and **Anime** get the full status/rating/comment flow — these are the only types where "did I finish it, was it good" is a meaningful question. Everything else is either a **Link** (URL) or a **Note** (plain text / media).
 
 ### Statuses (context-aware labels)
 
-| Status | Book | Movie/Series/Anime | Course | GitHub | Tool | Generic |
-|--------|------|-------------------|--------|--------|------|---------|
-| 📋 Backlog | To-read | To-watch | Planned | Backlog | Backlog | Backlog |
-| ✅ Done | Read | Watched | Finished | Using | Using | Done |
-| ❌ Dropped | Dropped | Dropped | Dropped | Dropped | Dropped | Dropped |
+| Status | Book | Movie/Series/Anime |
+|--------|------|--------------------|
+| 📋 Backlog | To-read | To-watch |
+| ✅ Done | Read | Watched |
+| ❌ Dropped | Dropped | Dropped |
 
 ### Content Types
 
-| Type | Button |
-|------|--------|
-| 📚 Book | Book |
-| 🎬 Movie | Movie |
-| 📺 Series | Series |
-| 🎌 Anime | Anime |
-| 📄 Article | Article |
-| 🎓 Course | Course |
-| 🐙 GitHub | GitHub |
-| ▶️ YouTube | YouTube |
-| 🛠 Tool | Tool |
-| 📝 Note | Note |
-| 📋 Other | Other |
+| Type | Button | Flow |
+|------|--------|------|
+| 📚 Book | Book | Status → (Season?) → Rating → Comment |
+| 🎬 Movie | Movie | Status → Rating → Comment |
+| 📺 Series | Series | Status → Season → Rating → Comment |
+| 🎌 Anime | Anime | Status → Season → Rating → Comment |
+| 🔗 Link | (auto) | Comment only (no status/rating) |
+| 📝 Note | Note | Comment only (no status/rating) |
 
 ### AI Analysis Details
 
 - **JSON Schema mode**: Workers AI `response_format` with `json_schema` guarantees valid structured output — no manual JSON parsing
 - **Model**: `@cf/meta/llama-3.1-8b-instruct-fp8-fast` by default (configurable via `AI_MODEL`)
 - **Temperature**: 0.15 (low — deterministic classification, not creative generation)
-- **Extracted fields**: `type` (enum), `title` (required), `author`, `year`, `description`, `tags`
+- **Extracted fields**: `type` (enum: book/movie/series/anime/note), `title` (required), `author`, `year`, `description`, `tags`
 - **Human-in-the-loop**: AI result is shown as a suggestion — user confirms or changes type before proceeding
 
 ### GitHub Metadata Resolution (no AI)
@@ -245,8 +256,32 @@ When a user sends a GitHub link, the bot fetches real metadata via GitHub API:
 ### Deduplication Methods
 
 - **By URL**: Exact match on the source URL
-- **By title**: Exact match on the item title
+- **By title**: Case-insensitive exact match on the item title
 - **Expired draft detection**: Bot notifies if a draft times out (30 min TTL)
+
+### Supported URL Providers
+
+| Provider | Detected by |
+|----------|-------------|
+| 🐙 GitHub | `github.com` |
+| ▶️ YouTube | `youtube.com`, `youtu.be` |
+| 📚 Goodreads | `goodreads.com` |
+| 🎬 IMDb | `imdb.com`, `kinopoisk.ru` |
+| 📄 arXiv | `arxiv.org` |
+| 🎓 Coursera / Udemy / Stepik | `coursera.org`, `udemy.com`, `stepik.org` |
+| 📰 Habr | `habr.com` |
+| 🌐 Wikipedia | `wikipedia.org` |
+| 🌍 Generic | Everything else → `Web` |
+
+### Media Archiving Details
+
+When a user sends a photo or PDF:
+1. The bot downloads the file from Telegram's servers via `getFile` API
+2. The file is permanently saved to `<repository>/inbox/assets/YYYY-MM-DD_slug.{jpg|pdf}`
+3. A metadata entry is saved to `inbox/pending/` with an `asset:` tag pointing to the archived file
+4. If the download or GitHub upload fails, the bot falls back to tagging the Telegram `file_id` so the item is still captured
+
+This is important because Telegram `file_id`s can expire and are only resolvable within the same bot token.
 
 ## 🔒 Security
 

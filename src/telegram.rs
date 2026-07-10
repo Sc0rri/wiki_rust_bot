@@ -3,16 +3,13 @@ use worker::*;
 
 use crate::state::KnowledgeType;
 
-// Type buttons
+// Type buttons — only the four media types get a full status/rating/comment
+// flow; everything else is a Link (URL) or a Note (freeform text/media).
 pub const BTN_BOOK: &str = "📚 Book";
 pub const BTN_MOVIE: &str = "🎬 Movie";
 pub const BTN_SERIES: &str = "📺 Series";
 pub const BTN_ANIME: &str = "🎌 Anime";
-pub const BTN_ARTICLE: &str = "📄 Article";
-pub const BTN_COURSE: &str = "🎓 Course";
-pub const BTN_TOOL: &str = "🛠 Tool";
 pub const BTN_NOTE: &str = "📝 Note";
-pub const BTN_OTHER: &str = "📋 Other";
 
 // Status buttons
 pub const BTN_BACKLOG: &str = "📋 Backlog";
@@ -21,7 +18,6 @@ pub const BTN_DROPPED: &str = "❌ Dropped";
 
 // Common buttons
 pub const BTN_CANCEL: &str = "❌ Cancel";
-pub const BTN_CONFIRM: &str = "✅ Save";
 pub const BTN_SKIP: &str = "⏭ Skip";
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -57,6 +53,9 @@ pub struct Message {
     pub from: Option<User>,
     pub photo: Option<Vec<PhotoSize>>,
     pub document: Option<Document>,
+    /// Present on forwarded messages. We don't need to parse its contents —
+    /// just knowing a message was forwarded is enough to route it to Note.
+    pub forward_origin: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -97,6 +96,41 @@ impl TelegramService {
         send_telegram_api(&url, &payload).await
     }
 
+    /// Resolves a file_id to its current file_path via Telegram's getFile API.
+    /// file_id is stable but file_path/the download URL is short-lived — this
+    /// must be called right before downloading, not cached.
+    pub async fn get_file_path(bot_token: &str, file_id: &str) -> Result<Option<String>> {
+        let url = format!("https://api.telegram.org/bot{}/getFile?file_id={}", bot_token, file_id);
+        let mut req_init = RequestInit::new();
+        req_init.with_method(Method::Get);
+        let req = Request::new_with_init(&url, &req_init)?;
+        let mut resp = Fetch::Request(req).send().await?;
+        if resp.status_code() != 200 {
+            let body = resp.text().await?;
+            crate::log_event!("warn", "telegram.getfile.failed", "status={} body_chars={}", resp.status_code(), body.chars().count());
+            return Ok(None);
+        }
+        let value: serde_json::Value = resp.json().await?;
+        Ok(value
+            .get("result")
+            .and_then(|r| r.get("file_path"))
+            .and_then(|p| p.as_str())
+            .map(|s| s.to_string()))
+    }
+
+    /// Downloads the raw bytes of a file previously resolved via get_file_path.
+    pub async fn download_file(bot_token: &str, file_path: &str) -> Result<Vec<u8>> {
+        let url = format!("https://api.telegram.org/file/bot{}/{}", bot_token, file_path);
+        let mut req_init = RequestInit::new();
+        req_init.with_method(Method::Get);
+        let req = Request::new_with_init(&url, &req_init)?;
+        let mut resp = Fetch::Request(req).send().await?;
+        if resp.status_code() != 200 {
+            return Err(worker::Error::from(format!("Telegram file download failed: status {}", resp.status_code())));
+        }
+        resp.bytes().await
+    }
+
     pub fn type_keyboard() -> serde_json::Value {
         serde_json::json!({
             "keyboard": [
@@ -109,15 +143,8 @@ impl TelegramService {
                     {"text": BTN_ANIME}
                 ],
                 [
-                    {"text": BTN_ARTICLE},
-                    {"text": BTN_COURSE}
-                ],
-                [
-                    {"text": BTN_TOOL},
-                    {"text": BTN_NOTE}
-                ],
-                [
-                    {"text": BTN_OTHER}
+                    {"text": BTN_NOTE},
+                    {"text": BTN_CANCEL}
                 ]
             ],
             "one_time_keyboard": true,
@@ -155,28 +182,7 @@ impl TelegramService {
                     {"text": BTN_ANIME}
                 ],
                 [
-                    {"text": BTN_ARTICLE},
-                    {"text": BTN_COURSE}
-                ],
-                [
-                    {"text": BTN_TOOL},
-                    {"text": BTN_NOTE}
-                ],
-                [
-                    {"text": BTN_OTHER},
-                    {"text": BTN_CANCEL}
-                ]
-            ],
-            "one_time_keyboard": true,
-            "resize_keyboard": true
-        })
-    }
-
-    pub fn confirm_keyboard() -> serde_json::Value {
-        serde_json::json!({
-            "keyboard": [
-                [
-                    {"text": BTN_CONFIRM},
+                    {"text": BTN_NOTE},
                     {"text": BTN_CANCEL}
                 ]
             ],

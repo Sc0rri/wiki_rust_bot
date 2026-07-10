@@ -67,6 +67,17 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
             return Ok(());
         }
 
+        if msg.forward_origin.is_some() {
+            let env_clone = env.clone();
+            let text_clone = text.clone();
+            ctx.wait_until(async move {
+                if let Err(e) = handle_forwarded(env_clone, chat_id, text_clone).await {
+                    log_event!("error", "telegram.forwarded.failed", "error={:?}", e);
+                }
+            });
+            return Ok(());
+        }
+
         if text.starts_with('/') {
             let env_clone = env.clone();
             ctx.wait_until(async move {
@@ -111,22 +122,68 @@ async fn handle_command(env: Env, chat_id: i64, text: &str) -> Result<()> {
     Ok(())
 }
 
+async fn handle_forwarded(env: Env, chat_id: i64, text: String) -> Result<()> {
+    let bot_token = env.secret("BOT_TOKEN")?.to_string();
+    let dedup_kv = env.kv("DEDUP_STORE")?;
+
+    let mut item = PendingItem::new(text, KnowledgeType::Note);
+    item.source = "telegram".to_string();
+    item.tags.push("forwarded".to_string());
+
+    save_and_finish(env, &bot_token, &dedup_kv, chat_id, item).await?;
+    Ok(())
+}
+
 async fn handle_media(env: Env, chat_id: i64, media_type: &str, file_id: &str) -> Result<()> {
     let bot_token = env.secret("BOT_TOKEN")?.to_string();
-    let text = match media_type {
-        "image" => "🖼 Image received\n\nWhat type?",
-        "pdf" => "📕 PDF received\n\nWhat type?",
+
+    let label = match media_type {
+        "image" => "Image",
+        "pdf" => "PDF",
         _ => return Ok(()),
     };
-    TelegramService::send_message(&bot_token, chat_id, text, Some(TelegramService::type_keyboard())).await?;
+    let extension = if media_type == "pdf" { "pdf" } else { "jpg" };
+
+    let mut item = PendingItem::new(format!("{} note", label), KnowledgeType::Note);
+    item.source = "telegram".to_string();
+
+    // Best-effort archive: download the file from Telegram and commit it to
+    // inbox/assets/, since file_id isn't a durable reference (it can expire
+    // and only ever resolves within this bot's own token). If any step fails,
+    // fall back to tagging the file_id so the item still gets captured.
+    match TelegramService::get_file_path(&bot_token, file_id).await {
+        Ok(Some(file_path)) => match TelegramService::download_file(&bot_token, &file_path).await {
+            Ok(bytes) => {
+                let asset_filename = ParserService::generate_asset_filename(&item, extension);
+                match GitHubService::save_asset(&env, &asset_filename, &bytes).await {
+                    Ok(asset_path) => {
+                        item.tags.push(format!("asset:{}", asset_path));
+                    }
+                    Err(e) => {
+                        log_event!("error", "github.asset.save_failed", "error={:?}", e);
+                        item.tags.push(format!("file:{}", file_id));
+                    }
+                }
+            }
+            Err(e) => {
+                log_event!("error", "telegram.file.download_failed", "error={:?}", e);
+                item.tags.push(format!("file:{}", file_id));
+            }
+        },
+        Ok(None) => {
+            log_event!("warn", "telegram.getfile.no_path", "file_id={}", file_id);
+            item.tags.push(format!("file:{}", file_id));
+        }
+        Err(e) => {
+            log_event!("error", "telegram.getfile.failed", "error={:?}", e);
+            item.tags.push(format!("file:{}", file_id));
+        }
+    }
+
     let kv = env.kv("STATE_STORE")?;
-    // Store file_id so we know which file was referenced
-    let state = UserState::AwaitingType {
-        raw_text: media_type.to_string(),
-        detected: None,
-        media_file_id: Some(file_id.to_string()),
-    };
+    let state = UserState::AwaitingComment { item };
     save_state(&kv, &format!("{}_state", chat_id), &state).await?;
+    TelegramService::send_message(&bot_token, chat_id, "Add a comment or skip:", Some(TelegramService::skip_keyboard())).await?;
     Ok(())
 }
 
@@ -165,92 +222,28 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
 
     match transition {
         TextTransition::Cancel => unreachable!(),
-        TextTransition::SelectType(kt) => {
-            let raw_text = match &state {
-                UserState::AwaitingType { raw_text, .. } => raw_text.clone(),
-                _ => text.clone(),
-            };
-            let detected = match &state {
-                UserState::AwaitingType { detected, .. } => detected.clone(),
-                _ => None,
-            };
-            let media_file_id = match &state {
-                UserState::AwaitingType { media_file_id, .. } => media_file_id.clone(),
-                _ => None,
-            };
-
-            // Issue 4: Use detected.title as the item title, not the raw URL
-            let title = if let Some(ref d) = detected {
-                if let Some(ref t) = d.title {
-                    t.clone()
-                } else if ParserService::is_url(&raw_text) {
-                    // URL with no guessable title → use domain-based fallback
-                    format!("{} link", d.provider.label())
-                } else {
-                    raw_text.clone()
-                }
-            } else {
-                raw_text.clone()
-            };
-
-            let mut item = PendingItem::new(title, kt.clone());
-            item.source = "telegram".to_string();
-            if let Some(d) = detected {
-                item.provider = d.provider;
-                item.url = Some(d.url);
-                item.description = d.description;
+        TextTransition::SelectType(kt) => match state {
+            UserState::AwaitingType { raw_text, .. } => {
+                let mut item = PendingItem::new(raw_text, kt.clone());
+                item.source = "telegram".to_string();
+                proceed_with_item(env, &bot_token, &kv, &dedup_kv, &state_key, chat_id, kt, item).await?;
             }
-            if let Some(fid) = media_file_id {
-                item.tags.push(format!("file:{}", fid));
+            UserState::AwaitingAiConfirm { mut item } => {
+                item.knowledge_type = kt.clone();
+                proceed_with_item(env, &bot_token, &kv, &dedup_kv, &state_key, chat_id, kt, item).await?;
             }
-
-            // Enrich GitHub repos with real metadata (stars/language/topics) via API
-            // instead of relying on the URL-guessed title.
-            if item.provider == ResourceProvider::Github {
-                if let Some(ref url) = item.url {
-                    if let Some(owner_repo) = Resolver::parse_github_url(url) {
-                        match Resolver::resolve_github(&env, &owner_repo).await {
-                            Ok(Some(resolved)) => {
-                                item.title = resolved.title;
-                                item.description = resolved.description.or(item.description);
-                                item.language = resolved.language;
-                                item.stars = resolved.stars;
-                                if !resolved.tags.is_empty() {
-                                    item.tags.extend(resolved.tags);
-                                }
-                            }
-                            Ok(None) => {
-                                log_event!("warn", "resolver.github.not_found", "repo={}", owner_repo);
-                            }
-                            Err(e) => {
-                                log_event!("error", "resolver.github.failed", "error={:?}", e);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if kt.has_status_options() {
-                let status_kb = TelegramService::status_keyboard(&kt);
-                let state = UserState::AwaitingStatus { item };
-                save_state(&kv, &state_key, &state).await?;
-                TelegramService::send_message(&bot_token, chat_id, &format!("{} Status?", kt.emoji()), Some(status_kb)).await?;
-            } else {
-                save_and_finish(env, &bot_token, &dedup_kv, chat_id, item).await?;
-            }
-        }
+            _ => {}
+        },
         TextTransition::SelectStatus(status) => {
             if let UserState::AwaitingStatus { mut item } = state {
                 item.status = status;
-                if item.status.needs_rating() {
-                    let state = UserState::AwaitingRating { item };
-                    save_state(&kv, &state_key, &state).await?;
-                    TelegramService::send_message(&bot_token, chat_id, "Rate 1-10 or skip:", Some(TelegramService::skip_keyboard())).await?;
-                } else {
-                    let state = UserState::AwaitingComment { item };
-                    save_state(&kv, &state_key, &state).await?;
-                    TelegramService::send_message(&bot_token, chat_id, "Add a comment or skip:", Some(TelegramService::skip_keyboard())).await?;
-                }
+                proceed_after_status(&kv, &bot_token, &state_key, chat_id, item).await?;
+            }
+        }
+        TextTransition::SetSeason(season) => {
+            if let UserState::AwaitingSeason { mut item } = state {
+                item.season = season;
+                proceed_after_season(&kv, &bot_token, &state_key, chat_id, item).await?;
             }
         }
         TextTransition::SetRating(rating) => {
@@ -263,7 +256,7 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
         }
         TextTransition::SetComment(comment) => {
             if let UserState::AwaitingComment { mut item } = state {
-                item.comment = Some(comment);
+                item.comment = if comment.is_empty() { None } else { Some(comment) };
                 delete_state(&kv, &state_key, chat_id).await?;
                 save_and_finish(env, &bot_token, &dedup_kv, chat_id, item).await?;
             }
@@ -271,18 +264,8 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
         TextTransition::ConfirmAi => {
             if let UserState::AwaitingAiConfirm { item } = state {
                 let kt = item.knowledge_type.clone();
-                if kt.has_status_options() {
-                    let status_kb = TelegramService::status_keyboard(&kt);
-                    let state = UserState::AwaitingStatus { item };
-                    save_state(&kv, &state_key, &state).await?;
-                    TelegramService::send_message(&bot_token, chat_id, &format!("{} Status?", kt.emoji()), Some(status_kb)).await?;
-                } else {
-                    save_and_finish(env, &bot_token, &dedup_kv, chat_id, item).await?;
-                }
+                proceed_with_item(env, &bot_token, &kv, &dedup_kv, &state_key, chat_id, kt, item).await?;
             }
-        }
-        TextTransition::Confirm => {
-            // No-op: confirmation step removed, items save immediately after comment
         }
         TextTransition::ProcessFresh => {
             delete_state(&kv, &state_key, chat_id).await?;
@@ -293,68 +276,125 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
     Ok(())
 }
 
+/// After status is set: Series/Anime get an extra "what season" prompt before
+/// rating/comment; everything else skips straight to proceed_after_season.
+async fn proceed_after_status(
+    kv: &worker::kv::KvStore,
+    bot_token: &str,
+    state_key: &str,
+    chat_id: i64,
+    item: PendingItem,
+) -> Result<()> {
+    if matches!(item.knowledge_type, KnowledgeType::Series | KnowledgeType::Anime) {
+        let state = UserState::AwaitingSeason { item };
+        save_state(kv, state_key, &state).await?;
+        TelegramService::send_message(bot_token, chat_id, "Season? (number or skip)", Some(TelegramService::skip_keyboard())).await?;
+    } else {
+        proceed_after_season(kv, bot_token, state_key, chat_id, item).await?;
+    }
+    Ok(())
+}
+
+async fn proceed_after_season(
+    kv: &worker::kv::KvStore,
+    bot_token: &str,
+    state_key: &str,
+    chat_id: i64,
+    item: PendingItem,
+) -> Result<()> {
+    if item.status.needs_rating() {
+        let state = UserState::AwaitingRating { item };
+        save_state(kv, state_key, &state).await?;
+        TelegramService::send_message(bot_token, chat_id, "Rate 1-10 or skip:", Some(TelegramService::skip_keyboard())).await?;
+    } else {
+        let state = UserState::AwaitingComment { item };
+        save_state(kv, state_key, &state).await?;
+        TelegramService::send_message(bot_token, chat_id, "Add a comment or skip:", Some(TelegramService::skip_keyboard())).await?;
+    }
+    Ok(())
+}
+
+/// Shared continuation after a type is known (from manual pick or AI confirm).
+/// This path only ever produces Book/Movie/Series/Anime/Note (Link is built
+/// and handled separately in process_fresh) — and a text-only Note has
+/// nothing worth commenting on, so it saves immediately. Media types go on
+/// to status/rating/comment as usual.
+async fn proceed_with_item(
+    env: Env,
+    bot_token: &str,
+    kv: &worker::kv::KvStore,
+    dedup_kv: &worker::kv::KvStore,
+    state_key: &str,
+    chat_id: i64,
+    kt: KnowledgeType,
+    item: PendingItem,
+) -> Result<()> {
+    if kt.has_status_options() {
+        let status_kb = TelegramService::status_keyboard(&kt);
+        let state = UserState::AwaitingStatus { item };
+        save_state(kv, state_key, &state).await?;
+        TelegramService::send_message(bot_token, chat_id, &format!("{} Status?", kt.emoji()), Some(status_kb)).await?;
+    } else {
+        delete_state(kv, state_key, chat_id).await?;
+        save_and_finish(env, bot_token, dedup_kv, chat_id, item).await?;
+    }
+    Ok(())
+}
+
 async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStore, chat_id: i64, text: &str) -> Result<()> {
     if ParserService::is_url(text) {
         let detected = Detector::detect(text);
-        
-        // Auto-detect type for obvious providers (GitHub → GithubRepo, YouTube → Movie)
-        let auto_type = if detected.provider == ResourceProvider::Github {
-            Some(KnowledgeType::GithubRepo)
-        } else if detected.provider == ResourceProvider::Youtube {
-            Some(KnowledgeType::Movie)
-        } else {
-            None
-        };
-        
-        if let Some(kt) = auto_type {
-            // Skip type selection, go straight to status
-            let mut item = PendingItem::new(
-                detected.title.clone().unwrap_or_else(|| format!("{} link", detected.provider.label())),
-                kt.clone()
-            );
-            item.source = "telegram".to_string();
-            item.provider = detected.provider.clone();
-            item.url = Some(detected.url.clone());
-            item.description = detected.description.clone();
-            
-            // Enrich GitHub repos with real metadata
-            if item.provider == ResourceProvider::Github {
-                if let Some(ref url) = item.url {
-                    if let Some(owner_repo) = Resolver::parse_github_url(url) {
-                        match Resolver::resolve_github(&env, &owner_repo).await {
-                            Ok(Some(resolved)) => {
-                                item.title = resolved.title;
-                                item.description = resolved.description.or(item.description);
-                                item.language = resolved.language;
-                                item.stars = resolved.stars;
-                                if !resolved.tags.is_empty() {
-                                    item.tags.extend(resolved.tags);
-                                }
+
+        let mut item = PendingItem::new(
+            detected.title.clone().unwrap_or_else(|| format!("{} link", detected.provider.label())),
+            KnowledgeType::Link,
+        );
+        item.source = "telegram".to_string();
+        item.provider = detected.provider.clone();
+        item.url = Some(detected.url.clone());
+        item.description = detected.description.clone();
+
+        // Enrich GitHub repos with real metadata (stars/language/topics) via API.
+        if item.provider == ResourceProvider::Github {
+            if let Some(ref url) = item.url {
+                if let Some(owner_repo) = Resolver::parse_github_url(url) {
+                    match Resolver::resolve_github(&env, &owner_repo).await {
+                        Ok(Some(resolved)) => {
+                            item.title = resolved.title;
+                            item.description = resolved.description.or(item.description);
+                            item.language = resolved.language;
+                            item.stars = resolved.stars;
+                            if !resolved.tags.is_empty() {
+                                item.tags.extend(resolved.tags);
                             }
-                            _ => {}
+                        }
+                        Ok(None) => {
+                            log_event!("warn", "resolver.github.not_found", "repo={}", owner_repo);
+                        }
+                        Err(e) => {
+                            log_event!("error", "resolver.github.failed", "error={:?}", e);
                         }
                     }
                 }
             }
-            
-            let status_kb = TelegramService::status_keyboard(&kt);
-            let state = UserState::AwaitingStatus { item };
-            let kv = env.kv("STATE_STORE")?;
-            save_state(&kv, &format!("{}_state", chat_id), &state).await?;
-            TelegramService::send_message(bot_token, chat_id, &format!("{} Status?", kt.emoji()), Some(status_kb)).await?;
-        } else {
-            // Ask user to pick type
-            TelegramService::send_message(bot_token, chat_id, &detected.preview_text(), Some(TelegramService::type_keyboard())).await?;
-            let kv = env.kv("STATE_STORE")?;
-            let state = UserState::AwaitingType {
-                raw_text: text.to_string(),
-                detected: Some(detected),
-                media_file_id: None,
-            };
-            save_state(&kv, &format!("{}_state", chat_id), &state).await?;
         }
+
+        // Links skip type/status entirely — show what was found (including
+        // GitHub stars/language, so the enrichment is actually visible in
+        // chat and not just in the committed file) and ask for a comment.
+        let preview = build_preview(&item);
+        let kv = env.kv("STATE_STORE")?;
+        let state = UserState::AwaitingComment { item };
+        save_state(&kv, &format!("{}_state", chat_id), &state).await?;
+        TelegramService::send_message(
+            bot_token,
+            chat_id,
+            &format!("{}\nAdd a comment or skip:", preview),
+            Some(TelegramService::skip_keyboard()),
+        ).await?;
     } else {
-        // Issue 2 + 4: Use AI to analyze text-only input, then ask user to confirm
+        // Plain text: let AI decide if it's a Book/Movie/Series/Anime — anything
+        // else (or an AI failure) falls back to a manual pick from those four + Note.
         match AiService::analyze_content(&env, text).await {
             Ok(Some(mut item)) => {
                 item.source = "telegram".to_string();
@@ -365,8 +405,7 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
                 TelegramService::send_message(bot_token, chat_id, &preview, Some(TelegramService::confirm_ai_keyboard())).await?;
             }
             _ => {
-                // Fallback: ask user to pick type
-                TelegramService::send_message(bot_token, chat_id, "Detected title.\n\nWhat type?", Some(TelegramService::type_keyboard())).await?;
+                TelegramService::send_message(bot_token, chat_id, "Couldn't detect type automatically.\n\nWhat type?", Some(TelegramService::type_keyboard())).await?;
                 let kv = env.kv("STATE_STORE")?;
                 let state = UserState::AwaitingType {
                     raw_text: text.to_string(),
@@ -403,9 +442,18 @@ async fn save_and_finish(env: Env, bot_token: &str, dedup_kv: &worker::kv::KvSto
 fn build_preview(item: &PendingItem) -> String {
     let mut preview = format!("{} {}\n", item.knowledge_type.emoji(), item.title);
     if let Some(ref url) = item.url { preview.push_str(&format!("🔗 {}\n", url)); }
-    if item.provider.label() != "" { preview.push_str(&format!("📦 {}\n", item.provider.label())); }
-    preview.push_str(&format!("📌 Status: {}\n", item.status.label(&item.knowledge_type)));
-    if let Some(r) = item.rating { preview.push_str(&format!("⭐ {}/10\n", r)); }
+    if !item.provider.label().is_empty() { preview.push_str(&format!("📦 {}\n", item.provider.label())); }
+    if item.stars.is_some() || item.language.is_some() {
+        let mut meta = Vec::new();
+        if let Some(stars) = item.stars { meta.push(format!("⭐ {}", stars)); }
+        if let Some(ref lang) = item.language { meta.push(lang.clone()); }
+        preview.push_str(&format!("{}\n", meta.join(" · ")));
+    }
+    if item.knowledge_type.has_status_options() {
+        preview.push_str(&format!("📌 Status: {}\n", item.status.label(&item.knowledge_type)));
+    }
+    if let Some(season) = item.season { preview.push_str(&format!("📀 Season {}\n", season)); }
+    if let Some(r) = item.rating { preview.push_str(&format!("🌟 {}/10\n", r)); }
     if let Some(ref c) = item.comment { preview.push_str(&format!("💬 \"{}\"\n", c)); }
     preview
 }
@@ -431,10 +479,10 @@ fn state_name(state: &UserState) -> &'static str {
         UserState::None => "none",
         UserState::AwaitingType { .. } => "awaiting_type",
         UserState::AwaitingStatus { .. } => "awaiting_status",
+        UserState::AwaitingSeason { .. } => "awaiting_season",
         UserState::AwaitingRating { .. } => "awaiting_rating",
         UserState::AwaitingComment { .. } => "awaiting_comment",
         UserState::AwaitingAiConfirm { .. } => "awaiting_ai_confirm",
-        UserState::AwaitingConfirmation { .. } => "awaiting_confirmation",
     }
 }
 

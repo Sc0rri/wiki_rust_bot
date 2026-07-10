@@ -23,6 +23,14 @@ impl ParserService {
         let slug = Self::slugify(&item.title);
         format!("{}_{}.yaml", now, slug)
     }
+
+    /// Same naming convention as generate_filename, so an asset and its
+    /// pending YAML entry are easy to correlate by eye in inbox/.
+    pub fn generate_asset_filename(item: &PendingItem, extension: &str) -> String {
+        let now = chrono::Utc::now().format("%Y-%m-%d");
+        let slug = Self::slugify(&item.title);
+        format!("{}_{}.{}", now, slug, extension)
+    }
 }
 
 #[cfg(test)]

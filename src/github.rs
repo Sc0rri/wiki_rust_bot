@@ -7,6 +7,55 @@ use worker::*;
 pub struct GitHubService;
 
 impl GitHubService {
+    /// Commits a binary file (photo/PDF) into inbox/assets/, returning the
+    /// committed path. Unlike a Telegram file_id (which can expire), this is
+    /// a permanent copy living in the private repo.
+    pub async fn save_asset(env: &Env, filename: &str, bytes: &[u8]) -> Result<String> {
+        let token = env.secret("GITHUB_TOKEN")?.to_string();
+        let repo = get_env_or_secret(env, "GITHUB_REPO", "Sc0rri/wiki");
+
+        let path = format!("inbox/assets/{}", filename);
+        let content_base64 = STANDARD.encode(bytes);
+
+        let url = format!("https://api.github.com/repos/{}/contents/{}", repo, path);
+
+        let payload = serde_json::json!({
+            "message": format!("Add asset: {}", filename),
+            "content": content_base64,
+            "branch": "main"
+        });
+
+        let headers = Headers::new();
+        headers.set("Authorization", &format!("Bearer {}", token))?;
+        headers.set("Content-Type", "application/json")?;
+        headers.set("User-Agent", "wiki-rust-bot")?;
+
+        let mut req_init = RequestInit::new();
+        req_init.with_method(Method::Put);
+        req_init.with_headers(headers);
+        req_init.with_body(Some(serde_json::to_string(&payload)?.into()));
+
+        let req = Request::new_with_init(&url, &req_init)?;
+        let mut resp = Fetch::Request(req).send().await?;
+
+        if resp.status_code() != 201 && resp.status_code() != 200 {
+            let err_text = resp.text().await?;
+            crate::log_event!(
+                "error",
+                "github.asset.failed",
+                "status={} body={}",
+                resp.status_code(),
+                err_text.chars().count()
+            );
+            return Err(worker::Error::from(format!(
+                "GitHub API error: {}",
+                err_text.chars().take(200).collect::<String>()
+            )));
+        }
+
+        Ok(path)
+    }
+
     pub async fn save_to_inbox(
         env: &Env,
         item: &PendingItem,
@@ -98,6 +147,10 @@ impl GitHubService {
             yaml.push_str(&format!("year: {}\n", year));
         }
         
+        if let Some(season) = item.season {
+            yaml.push_str(&format!("season: {}\n", season));
+        }
+        
         if let Some(stars) = item.stars {
             yaml.push_str(&format!("stars: {}\n", stars));
         }
@@ -132,7 +185,7 @@ mod tests {
 
     #[test]
     fn generate_yaml_should_create_valid_frontmatter() {
-        let mut item = PendingItem::new("Test Article".to_string(), KnowledgeType::Article);
+        let mut item = PendingItem::new("Test Article".to_string(), KnowledgeType::Link);
         item.author = Some("Test Author".to_string());
         item.year = Some(2024);
         item.status = ContentStatus::Backlog;
@@ -141,7 +194,7 @@ mod tests {
 
         let yaml = GitHubService::generate_yaml(&item);
         
-        assert!(yaml.contains("type: article"));
+        assert!(yaml.contains("type: link"));
         assert!(yaml.contains("title: \"Test Article\""));
         assert!(yaml.contains("author: \"Test Author\""));
         assert!(yaml.contains("year: 2024"));

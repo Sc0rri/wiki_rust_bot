@@ -26,7 +26,13 @@ pub enum ResourceProvider {
     Direct,
 }
 
-/// What kind of knowledge this represents
+/// What kind of knowledge this represents.
+///
+/// Only Book/Movie/Series/Anime get the full status+rating+comment flow —
+/// those are the only types where "did I finish it, was it good" is a
+/// meaningful question. Everything else that arrives as a URL is just a
+/// `Link` (optional comment only); everything else that arrives as plain
+/// text/media and isn't clearly one of the four is a `Note`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum KnowledgeType {
@@ -34,12 +40,8 @@ pub enum KnowledgeType {
     Movie,
     Series,
     Anime,
-    Article,
-    Course,
-    GithubRepo,
-    Tool,
+    Link,
     Note,
-    Other,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -74,6 +76,7 @@ pub struct PendingItem {
     pub author: Option<String>,
     pub language: Option<String>,
     pub year: Option<i32>,
+    pub season: Option<u32>,
     pub stars: Option<i32>,
     pub rating: Option<u8>,
     pub comment: Option<String>,
@@ -97,6 +100,7 @@ impl PendingItem {
             author: None,
             language: None,
             year: None,
+            season: None,
             stars: None,
             rating: None,
             comment: None,
@@ -119,6 +123,9 @@ pub enum UserState {
     AwaitingStatus {
         item: PendingItem,
     },
+    AwaitingSeason {
+        item: PendingItem,
+    },
     AwaitingRating {
         item: PendingItem,
     },
@@ -128,9 +135,6 @@ pub enum UserState {
     AwaitingAiConfirm {
         item: PendingItem,
     },
-    AwaitingConfirmation {
-        item: PendingItem,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -138,10 +142,10 @@ pub enum TextTransition {
     Cancel,
     SelectType(KnowledgeType),
     SelectStatus(ContentStatus),
+    SetSeason(Option<u32>),
     SetRating(u8),
     SetComment(String),
     ConfirmAi,
-    Confirm,
     ProcessFresh,
 }
 
@@ -152,12 +156,8 @@ impl KnowledgeType {
             Self::Movie => "🎬",
             Self::Series => "📺",
             Self::Anime => "🎌",
-            Self::Article => "📄",
-            Self::Course => "🎓",
-            Self::GithubRepo => "🐙",
-            Self::Tool => "🛠",
+            Self::Link => "🔗",
             Self::Note => "📝",
-            Self::Other => "📋",
         }
     }
 
@@ -167,17 +167,15 @@ impl KnowledgeType {
             Self::Movie => "Movie",
             Self::Series => "Series",
             Self::Anime => "Anime",
-            Self::Article => "Article",
-            Self::Course => "Course",
-            Self::GithubRepo => "GitHub",
-            Self::Tool => "Tool",
+            Self::Link => "Link",
             Self::Note => "Note",
-            Self::Other => "Other",
         }
     }
 
+    /// Only media types get status/rating — a Link or Note has nothing
+    /// meaningful to track beyond an optional comment.
     pub fn has_status_options(&self) -> bool {
-        matches!(self, Self::Book | Self::Movie | Self::Series | Self::Anime | Self::Course | Self::Article | Self::GithubRepo | Self::Tool)
+        matches!(self, Self::Book | Self::Movie | Self::Series | Self::Anime)
     }
 }
 
@@ -187,16 +185,11 @@ impl ContentStatus {
             Self::Backlog => match kt {
                 KnowledgeType::Book => "To-read",
                 KnowledgeType::Movie | KnowledgeType::Series | KnowledgeType::Anime => "To-watch",
-                KnowledgeType::Course => "Planned",
-                KnowledgeType::Tool => "Backlog",
                 _ => "Backlog",
             },
             Self::Done => match kt {
                 KnowledgeType::Book => "Read",
                 KnowledgeType::Movie | KnowledgeType::Series | KnowledgeType::Anime => "Watched",
-                KnowledgeType::Course => "Finished",
-                KnowledgeType::Tool => "Using",
-                KnowledgeType::GithubRepo => "Using",
                 _ => "Done",
             },
             Self::Dropped => "Dropped",
@@ -256,27 +249,29 @@ impl UserState {
                     TextTransition::SelectType(KnowledgeType::Series)
                 } else if lower.contains("anime") || lower.contains("аним") {
                     TextTransition::SelectType(KnowledgeType::Anime)
-                } else if lower.contains("article") || lower.contains("статья") {
-                    TextTransition::SelectType(KnowledgeType::Article)
-                } else if lower.contains("course") || lower.contains("курс") {
-                    TextTransition::SelectType(KnowledgeType::Course)
-                } else if lower.contains("tool") || lower.contains("инструмент") {
-                    TextTransition::SelectType(KnowledgeType::Tool)
-                } else if lower.contains("note") || lower.contains("заметк") || lower.contains("idea") || lower.contains("идея") {
-                    TextTransition::SelectType(KnowledgeType::Note)
                 } else {
-                    TextTransition::SelectType(KnowledgeType::Other)
+                    TextTransition::SelectType(KnowledgeType::Note)
                 }
             }
             Self::AwaitingStatus { .. } => {
-                if lower.contains("backlog") || lower.contains("to-read") || lower.contains("to-watch") || lower.contains("planned") || lower.contains("отложен") {
+                if lower.contains("backlog") || lower.contains("to-read") || lower.contains("to-watch") || lower.contains("отложен") {
                     TextTransition::SelectStatus(ContentStatus::Backlog)
-                } else if lower.contains("done") || lower.contains("read") || lower.contains("watched") || lower.contains("finished") || lower.contains("прочитан") || lower.contains("посмотрел") {
+                } else if lower.contains("done") || lower.contains("read") || lower.contains("watched") || lower.contains("прочитан") || lower.contains("посмотрел") {
                     TextTransition::SelectStatus(ContentStatus::Done)
                 } else if lower.contains("dropped") || lower.contains("бросил") {
                     TextTransition::SelectStatus(ContentStatus::Dropped)
-                } else if lower.contains("using") || lower.contains("interesting") || lower.contains("использую") || lower.contains("интересн") {
-                    TextTransition::SelectStatus(ContentStatus::Done)
+                } else {
+                    TextTransition::ProcessFresh
+                }
+            }
+            Self::AwaitingSeason { .. } => {
+                if let Ok(season) = lower.parse::<u32>() {
+                    if season >= 1 {
+                        return TextTransition::SetSeason(Some(season));
+                    }
+                }
+                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее" {
+                    TextTransition::SetSeason(None)
                 } else {
                     TextTransition::ProcessFresh
                 }
@@ -288,7 +283,7 @@ impl UserState {
                     }
                 }
                 if lower.contains("skip") || lower.contains("пропустить") || lower == "далее" {
-                    TextTransition::SetRating(0)  // 0 = skipped
+                    TextTransition::SetRating(0) // 0 = skipped
                 } else {
                     TextTransition::ProcessFresh
                 }
@@ -303,13 +298,16 @@ impl UserState {
             Self::AwaitingAiConfirm { .. } => {
                 if lower == "confirm" || lower == "✅ confirm" || lower == "да" || lower == "подтвердить" {
                     TextTransition::ConfirmAi
-                } else {
-                    TextTransition::ProcessFresh
-                }
-            }
-            Self::AwaitingConfirmation { .. } => {
-                if lower == "confirm" || lower == "✅ save" || lower == "да" || lower == "сохранить" {
-                    TextTransition::Confirm
+                } else if lower.contains("book") || lower.contains("книг") {
+                    TextTransition::SelectType(KnowledgeType::Book)
+                } else if lower.contains("movie") || lower.contains("фильм") {
+                    TextTransition::SelectType(KnowledgeType::Movie)
+                } else if lower.contains("series") || lower.contains("сериал") {
+                    TextTransition::SelectType(KnowledgeType::Series)
+                } else if lower.contains("anime") || lower.contains("аним") {
+                    TextTransition::SelectType(KnowledgeType::Anime)
+                } else if lower.contains("note") || lower.contains("заметк") {
+                    TextTransition::SelectType(KnowledgeType::Note)
                 } else {
                     TextTransition::ProcessFresh
                 }
@@ -326,27 +324,30 @@ mod tests {
     #[test]
     fn knowledge_type_emoji_should_return_correct_emoji() {
         assert_eq!(KnowledgeType::Book.emoji(), "📚");
-        assert_eq!(KnowledgeType::Tool.emoji(), "🛠");
+        assert_eq!(KnowledgeType::Link.emoji(), "🔗");
     }
 
     #[test]
     fn content_status_label_should_return_correct_label() {
         let book = KnowledgeType::Book;
         let movie = KnowledgeType::Movie;
-        let course = KnowledgeType::Course;
-        let tool = KnowledgeType::Tool;
-        let github = KnowledgeType::GithubRepo;
+        let note = KnowledgeType::Note;
         assert_eq!(ContentStatus::Backlog.label(&book), "To-read");
         assert_eq!(ContentStatus::Backlog.label(&movie), "To-watch");
-        assert_eq!(ContentStatus::Backlog.label(&course), "Planned");
-        assert_eq!(ContentStatus::Backlog.label(&tool), "Backlog");
-        assert_eq!(ContentStatus::Backlog.label(&github), "Backlog");
+        assert_eq!(ContentStatus::Backlog.label(&note), "Backlog");
         assert_eq!(ContentStatus::Done.label(&book), "Read");
         assert_eq!(ContentStatus::Done.label(&movie), "Watched");
-        assert_eq!(ContentStatus::Done.label(&course), "Finished");
-        assert_eq!(ContentStatus::Done.label(&tool), "Using");
-        assert_eq!(ContentStatus::Done.label(&github), "Using");
         assert_eq!(ContentStatus::Dropped.label(&book), "Dropped");
+    }
+
+    #[test]
+    fn has_status_options_should_be_true_only_for_media_types() {
+        assert!(KnowledgeType::Book.has_status_options());
+        assert!(KnowledgeType::Movie.has_status_options());
+        assert!(KnowledgeType::Series.has_status_options());
+        assert!(KnowledgeType::Anime.has_status_options());
+        assert!(!KnowledgeType::Link.has_status_options());
+        assert!(!KnowledgeType::Note.has_status_options());
     }
 
     #[test]
