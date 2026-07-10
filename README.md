@@ -229,7 +229,7 @@ The bot recognizes five content types. Only **Book**, **Movie**, **Series**, and
 
 | Type | Button | Flow |
 |------|--------|------|
-| 📚 Book | Book | Status → (Season?) → Rating → Comment |
+| 📚 Book | Book | Status → Rating → Comment |
 | 🎬 Movie | Movie | Status → Rating → Comment |
 | 📺 Series | Series | Status → Season → Rating → Comment |
 | 🎌 Anime | Anime | Status → Season → Rating → Comment |
