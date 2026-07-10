@@ -474,6 +474,7 @@ async fn delete_state(kv: &worker::kv::KvStore, state_key: &str, chat_id: i64) -
     Ok(())
 }
 
+#[cfg(test)]
 fn state_name(state: &UserState) -> &'static str {
     match state {
         UserState::None => "none",

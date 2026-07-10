@@ -1,4 +1,4 @@
-use crate::state::{ContentStatus, KnowledgeType, PendingItem, ResourceProvider};
+use crate::state::PendingItem;
 use crate::parser::ParserService;
 use crate::get_env_or_secret;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -182,6 +182,7 @@ impl GitHubService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::{ContentStatus, KnowledgeType, ResourceProvider};
 
     #[test]
     fn generate_yaml_should_create_valid_frontmatter() {

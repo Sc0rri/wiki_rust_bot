@@ -219,14 +219,6 @@ impl ResourceProvider {
     }
 }
 
-impl DetectedResource {
-    pub fn preview_text(&self) -> String {
-        let provider = self.provider.label();
-        let title = self.title.as_deref().unwrap_or("Untitled");
-        format!("🔗 {}: {}", provider, title)
-    }
-}
-
 impl UserState {
     pub fn parse_or_none(raw: &str) -> Self {
         serde_json::from_str(raw).unwrap_or(Self::None)
