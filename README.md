@@ -1,11 +1,11 @@
 # 🤖 Wiki LLM Bot
 
-A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send links or titles via Telegram — the bot detects the source, lets you choose status/rating/comment, and saves YAML files to a GitHub repository for later processing by Hermes.
+A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send links, titles, photos, or PDFs via Telegram — the bot saves YAML files to a GitHub repository for later processing by Hermes.
 
 ## ✨ Features
 
-- **📚 Multi-content support**: Books, Movies, Series, Anime, Links, Notes
-- **🔗 Smart detection**: URL provider detection (GitHub, YouTube, Goodreads, IMDb/Kinopoisk, arXiv, Coursera/Udemy/Stepik, Habr, Wikipedia, etc.) without AI
+- **📚 Content types**: Book, Movie, Series, Anime, Link, Note
+- **🔗 Smart URL detection**: GitHub, YouTube, Goodreads, IMDb/Kinopoisk, arXiv, Coursera/Udemy/Stepik, Habr, Wikipedia, etc.
 - **🎯 Simple statuses**: Backlog, Done, Dropped — with context-aware labels (To-read/Read, To-watch/Watched)
 - **📺 Season tracking**: Series and Anime get an extra season prompt before rating
 - **⭐ Rating & comments**: Rate 1-10 and add comments for completed or dropped items
@@ -23,7 +23,7 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 ```
 Telegram → Cloudflare Worker
   ├── Cloudflare KV (state + dedup, 30 min TTL)
-  ├── Detector (URL → provider/resource type)
+  ├── Detector (URL → provider)
   ├── Resolver (GitHub API → metadata, no AI)
   ├── Cloudflare AI (JSON Schema mode, temperature 0.15)
   └── GitHub API → <repository>/inbox/pending/
@@ -43,7 +43,7 @@ Telegram → Cloudflare Worker
     ├── telegram.rs     # Telegram API types + service
     ├── github.rs       # GitHub commit to inbox/pending/ + inbox/assets/
     ├── ai.rs           # Cloudflare Workers AI (JSON Schema mode)
-    ├── detector.rs     # URL → provider/resource type
+    ├── detector.rs     # URL → provider
     ├── resolver.rs     # Public API resolvers (GitHub API)
     ├── parser.rs       # Slugify, filename generation
     ├── state.rs        # UserState, PendingItem, KnowledgeType/Status
@@ -111,6 +111,8 @@ User: ⏭ Skip
 Bot: ✅ Saved: inbox/pending/2026-07-08_tokio.yaml
 ```
 
+GitHub links are auto-detected as `Link` type. The bot fetches real metadata (name, description, language, stars, topics) via GitHub API — no AI needed.
+
 ### Send a title (text input with AI analysis + human confirmation)
 
 ```
@@ -156,6 +158,8 @@ User: ⏭ Skip
 Bot: ✅ Saved: inbox/pending/2026-07-08_youtube-video.yaml
 ```
 
+YouTube links are auto-detected as `Link` type — no status/rating, just an optional comment.
+
 ### Send a photo or PDF
 
 ```
@@ -176,6 +180,8 @@ The photo/PDF is permanently archived to `inbox/assets/YYYY-MM-DD_slug.{jpg|pdf}
 User: (forwarded text)
 Bot: ✅ Saved: inbox/pending/2026-07-08_forwarded-note.yaml
 ```
+
+Forwarded messages are automatically saved as Notes without any prompts.
 
 ### Commands
 

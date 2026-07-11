@@ -7,19 +7,31 @@ impl ParserService {
         text.starts_with("http://") || text.starts_with("https://")
     }
 
+    /// Slugifies text for use in a filename/URL path. Length is capped
+    /// because titles can be an entire forwarded paragraph (e.g. a long
+    /// Note) — an unbounded slug turns into a GitHub API request URL long
+    /// enough that GitHub rejects it outright ("Request-URL too long").
     pub fn slugify(text: &str) -> String {
-        text.to_lowercase()
+        const MAX_SLUG_CHARS: usize = 60;
+        let slug = text
+            .to_lowercase()
             .chars()
             .map(|c| if c.is_alphanumeric() { c } else { '-' })
             .collect::<String>()
             .split('-')
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
-            .join("-")
+            .join("-");
+
+        if slug.chars().count() > MAX_SLUG_CHARS {
+            slug.chars().take(MAX_SLUG_CHARS).collect()
+        } else {
+            slug
+        }
     }
 
     pub fn generate_filename(item: &PendingItem) -> String {
-        let now = chrono::Utc::now().format("%Y-%m-%d");
+        let now = chrono::Utc::now().format("%Y-%m-%d_%H%M");
         let slug = Self::slugify(&item.title);
         format!("{}_{}.yaml", now, slug)
     }
@@ -27,7 +39,7 @@ impl ParserService {
     /// Same naming convention as generate_filename, so an asset and its
     /// pending YAML entry are easy to correlate by eye in inbox/.
     pub fn generate_asset_filename(item: &PendingItem, extension: &str) -> String {
-        let now = chrono::Utc::now().format("%Y-%m-%d");
+        let now = chrono::Utc::now().format("%Y-%m-%d_%H%M");
         let slug = Self::slugify(&item.title);
         format!("{}_{}.{}", now, slug, extension)
     }
@@ -57,6 +69,13 @@ mod tests {
     fn slugify_should_create_url_slug() {
         assert_eq!(ParserService::slugify("Lord of the Rings"), "lord-of-the-rings");
         assert_eq!(ParserService::slugify("The Matrix (1999)"), "the-matrix-1999");
+    }
+
+    #[test]
+    fn slugify_should_cap_length_for_long_text() {
+        let long_text = "a ".repeat(200); // 400 chars of "a a a a ..."
+        let slug = ParserService::slugify(&long_text);
+        assert!(slug.chars().count() <= 60, "slug was {} chars", slug.chars().count());
     }
 
     #[test]
