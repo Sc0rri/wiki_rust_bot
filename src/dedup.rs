@@ -34,4 +34,44 @@ impl DedupService {
     pub fn title_key(title: &str) -> String {
         format!("title:{}", title.to_lowercase())
     }
+
+    /// Deletes every dedup entry (both "title:" and "url:" prefixes),
+    /// paginating through the KV list since a namespace can hold more than
+    /// one page (1000 keys) of entries. Returns the number of keys deleted.
+    pub async fn clear_all(kv: &kv::KvStore) -> Result<usize> {
+        let mut deleted = 0usize;
+
+        for prefix in ["title:", "url:"] {
+            let mut cursor: Option<String> = None;
+            loop {
+                let mut builder = kv.list().prefix(prefix.to_string());
+                if let Some(c) = cursor.take() {
+                    builder = builder.cursor(c);
+                }
+                let page = builder
+                    .execute()
+                    .await
+                    .map_err(|e| worker::Error::from(e.to_string()))?;
+
+                for key in &page.keys {
+                    match kv.delete(&key.name).await {
+                        Ok(_) => deleted += 1,
+                        Err(e) => {
+                            crate::log_event!("warn", "dedup.clear.delete_failed", "key={} error={:?}", key.name, e);
+                        }
+                    }
+                }
+
+                if page.list_complete {
+                    break;
+                }
+                match page.cursor {
+                    Some(c) if !c.is_empty() => cursor = Some(c),
+                    _ => break,
+                }
+            }
+        }
+
+        Ok(deleted)
+    }
 }

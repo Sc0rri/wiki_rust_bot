@@ -49,6 +49,7 @@ pub struct PhotoSize {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Message {
     pub text: Option<String>,
+    pub caption: Option<String>,
     pub chat: Chat,
     pub from: Option<User>,
     pub photo: Option<Vec<PhotoSize>>,
