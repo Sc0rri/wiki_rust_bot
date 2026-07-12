@@ -32,12 +32,52 @@ impl AiService {
             text
         );
 
-        let parsed = match Self::run_json(env, &prompt).await? {
+        let parsed = match Self::run_json_with_schema(env, &prompt, &content_schema()).await? {
             Some(v) => v,
             None => return Ok(None),
         };
 
         Ok(Some(Self::build_item(&parsed, text)))
+    }
+
+    /// For links, the type is already known (it's a Link) — asking AI to
+    /// classify it again adds nothing. What's actually valuable is a short
+    /// summary and topic tags, given what we already fetched (title +
+    /// whatever description came from the page/API). Returns (summary, topics).
+    pub async fn enrich_link(env: &Env, title: &str, existing_description: Option<&str>, url: &str) -> Result<Option<(String, Vec<String>)>> {
+        let context = existing_description.unwrap_or("");
+        let prompt = format!(
+            "A link was saved with title \"{}\" (url: {}). Existing description: \"{}\".\n\
+             Write a one-sentence summary of what this is and why it might be interesting, \
+             and list 2-5 short topic tags (technologies, concepts, subject areas).",
+            title, url, context
+        );
+
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "summary": { "type": "string" },
+                "topics": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["summary", "topics"]
+        });
+
+        let parsed = match Self::run_json_with_schema(env, &prompt, &schema).await? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+
+        let summary = parsed.get("summary").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let topics: Vec<String> = parsed
+            .get("topics")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+
+        match summary {
+            Some(s) if !s.is_empty() => Ok(Some((s, topics))),
+            _ => Ok(None),
+        }
     }
 
     /// Runs the model with JSON Mode enabled and returns the parsed JSON value.
@@ -46,7 +86,7 @@ impl AiService {
     /// still return text even when a schema is requested) — treating only the
     /// string case as valid was a likely source of intermittent "AI doesn't
     /// work" failures.
-    async fn run_json(env: &Env, prompt: &str) -> Result<Option<serde_json::Value>> {
+    async fn run_json_with_schema(env: &Env, prompt: &str, schema: &serde_json::Value) -> Result<Option<serde_json::Value>> {
         let ai = match env.ai("AI") {
             Ok(ai) => ai,
             Err(e) => {
@@ -62,7 +102,7 @@ impl AiService {
             "temperature": 0.15,
             "response_format": {
                 "type": "json_schema",
-                "json_schema": content_schema()
+                "json_schema": schema
             }
         });
 

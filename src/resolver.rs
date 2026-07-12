@@ -89,7 +89,7 @@ impl Resolver {
     pub async fn resolve_youtube(url: &str) -> Result<Option<(String, Option<String>)>> {
         let oembed_url = format!(
             "https://www.youtube.com/oembed?url={}&format=json",
-            Self::percent_encode(url)
+            urlencoding::encode(url)
         );
 
         let mut req_init = RequestInit::new();
@@ -181,17 +181,6 @@ impl Resolver {
             .replace("&lt;", "<")
             .replace("&gt;", ">")
     }
-
-    fn percent_encode(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        for b in s.bytes() {
-            match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-                _ => out.push_str(&format!("%{:02X}", b)),
-            }
-        }
-        out
-    }
 }
 
 #[cfg(test)]
@@ -240,13 +229,5 @@ mod tests {
     fn decode_html_entities_should_unescape_common_entities() {
         assert_eq!(Resolver::decode_html_entities("Tom &amp; Jerry"), "Tom & Jerry");
         assert_eq!(Resolver::decode_html_entities("&quot;quoted&quot;"), "\"quoted\"");
-    }
-
-    #[test]
-    fn percent_encode_should_escape_reserved_chars() {
-        assert_eq!(
-            Resolver::percent_encode("https://youtu.be/abc?x=1"),
-            "https%3A%2F%2Fyoutu.be%2Fabc%3Fx%3D1"
-        );
     }
 }

@@ -177,6 +177,17 @@ impl GitHubService {
         } else {
             yaml.push_str("tags: []\n");
         }
+
+        if let Some(ref mime) = item.asset_mime {
+            yaml.push_str(&format!("asset_mime: {}\n", mime));
+        }
+        if let (Some(w), Some(h)) = (item.asset_width, item.asset_height) {
+            yaml.push_str(&format!("asset_width: {}\n", w));
+            yaml.push_str(&format!("asset_height: {}\n", h));
+        }
+        if let Some(ref sha) = item.asset_sha256 {
+            yaml.push_str(&format!("asset_sha256: {}\n", sha));
+        }
         
         yaml.push_str(&format!("processed: {}\n", item.processed));
         yaml.push_str("---\n");

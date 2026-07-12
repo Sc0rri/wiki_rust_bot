@@ -35,14 +35,18 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
         let chat_id = msg.chat.id;
 
         if let Some(photos) = &msg.photo {
-            if !photos.is_empty() {
-                // Take the largest photo (last in array)
-                let file_id = photos.last().map(|p| p.file_id.clone()).unwrap_or_default();
+            if let Some(photo) = photos.last().cloned() {
+                let file_id = photo.file_id.clone();
                 let caption = msg.caption.clone();
                 let is_forwarded = msg.forward_origin.is_some();
+                let meta = MediaMeta {
+                    width: Some(photo.width),
+                    height: Some(photo.height),
+                    mime: Some("image/jpeg".to_string()), // Telegram always sends photos as JPEG
+                };
                 let env_clone = env.clone();
                 ctx.wait_until(async move {
-                    if let Err(e) = handle_media(env_clone, chat_id, "image", &file_id, caption, is_forwarded).await {
+                    if let Err(e) = handle_media(env_clone, chat_id, "image", &file_id, caption, is_forwarded, meta).await {
                         log_event!("error", "telegram.photo.failed", "error={:?}", e);
                     }
                 });
@@ -53,12 +57,13 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
         if let Some(doc) = msg.document.as_ref().cloned() {
             let caption = msg.caption.clone();
             let is_forwarded = msg.forward_origin.is_some();
+            let meta = MediaMeta { width: None, height: None, mime: doc.mime_type.clone() };
             let env_clone = env.clone();
             ctx.wait_until(async move {
                 let file_name = doc.file_name.unwrap_or_default();
                 let file_id = doc.file_id.clone();
                 if file_name.to_lowercase().ends_with(".pdf") {
-                    if let Err(e) = handle_media(env_clone, chat_id, "pdf", &file_id, caption, is_forwarded).await {
+                    if let Err(e) = handle_media(env_clone, chat_id, "pdf", &file_id, caption, is_forwarded, meta).await {
                         log_event!("error", "telegram.pdf.failed", "error={:?}", e);
                     }
                 }
@@ -149,7 +154,21 @@ async fn handle_forwarded(env: Env, chat_id: i64, text: String) -> Result<()> {
     Ok(())
 }
 
-async fn handle_media(env: Env, chat_id: i64, media_type: &str, file_id: &str, caption: Option<String>, is_forwarded: bool) -> Result<()> {
+struct MediaMeta {
+    width: Option<i64>,
+    height: Option<i64>,
+    mime: Option<String>,
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+async fn handle_media(env: Env, chat_id: i64, media_type: &str, file_id: &str, caption: Option<String>, is_forwarded: bool, meta: MediaMeta) -> Result<()> {
     let bot_token = env.secret("BOT_TOKEN")?.to_string();
 
     let label = match media_type {
@@ -168,6 +187,9 @@ async fn handle_media(env: Env, chat_id: i64, media_type: &str, file_id: &str, c
 
     let mut item = PendingItem::new(title, KnowledgeType::Note);
     item.source = "telegram".to_string();
+    item.asset_width = meta.width;
+    item.asset_height = meta.height;
+    item.asset_mime = meta.mime;
     if let Some(ref c) = caption {
         let trimmed = c.trim();
         if !trimmed.is_empty() {
@@ -187,6 +209,7 @@ async fn handle_media(env: Env, chat_id: i64, media_type: &str, file_id: &str, c
     let archived = match TelegramService::get_file_path(&bot_token, file_id).await {
         Ok(Some(file_path)) => match TelegramService::download_file(&bot_token, &file_path).await {
             Ok(bytes) => {
+                item.asset_sha256 = Some(sha256_hex(&bytes));
                 let asset_filename = ParserService::generate_asset_filename(&item, extension);
                 match GitHubService::save_asset(&env, &asset_filename, &bytes).await {
                     Ok(asset_path) => {
@@ -470,6 +493,25 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
             }
         }
 
+        // Now that we have a title (and maybe a description) from the
+        // mechanical resolution above, ask AI for what it's actually good
+        // for: a short summary and topic tags — not "what type is this",
+        // which is already known (it's a Link).
+        match AiService::enrich_link(&env, &item.title, item.description.as_deref(), &detected.url).await {
+            Ok(Some((summary, topics))) => {
+                item.description = Some(summary);
+                for topic in topics {
+                    if !item.tags.contains(&topic) {
+                        item.tags.push(topic);
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                log_event!("warn", "ai.enrich_link.failed", "error={:?}", e);
+            }
+        }
+
         // Links skip type/status entirely — show what was found (including
         // GitHub stars/language, so the enrichment is actually visible in
         // chat and not just in the committed file) and ask for a comment.
@@ -547,6 +589,12 @@ fn build_preview(item: &PendingItem) -> String {
         if let Some(stars) = item.stars { meta.push(format!("⭐ {}", stars)); }
         if let Some(ref lang) = item.language { meta.push(lang.clone()); }
         preview.push_str(&format!("{}\n", meta.join(" · ")));
+    }
+    if let Some(ref desc) = item.description {
+        preview.push_str(&format!("📝 {}\n", desc));
+    }
+    if !item.tags.is_empty() {
+        preview.push_str(&format!("🏷 {}\n", item.tags.join(", ")));
     }
     if item.knowledge_type.has_status_options() {
         preview.push_str(&format!("📌 Status: {}\n", item.status.label(&item.knowledge_type)));

@@ -6,16 +6,17 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 
 - **📚 Content types**: Book, Movie, Series, Anime, Link, Note
 - **🔗 Smart URL detection**: GitHub, YouTube, Goodreads, IMDb/Kinopoisk, arXiv, Coursera/Udemy/Stepik, Habr, Wikipedia, etc.
-- **🎯 Simple statuses**: Backlog, Done, Dropped — with context-aware labels (To-read/Read, To-watch/Watched)
+- **🎯 Statuses**: Backlog, Done, Dropped — displayed as To-read/Read for books, To-watch/Watched for movies/series/anime
 - **📺 Season tracking**: Series and Anime get an extra season prompt before rating
-- **⭐ Rating & comments**: Rate 1-10 and add comments for completed or dropped items
-- **🤖 AI-powered analysis** (JSON Schema mode): Cloudflare Workers AI extracts title, author, year, description, and tags with guaranteed structured output
-- **🔗 GitHub metadata resolution**: Fetches description, language, stars, and topics via GitHub API (no AI)
+- **⭐ Rating**: Rate 1-10 for Done or Dropped statuses (Backlog skips rating)
+- **💬 Comment**: Optional follow-up comment after rating
+- **🤖 AI content classification** (JSON Schema mode): Cloudflare Workers AI classifies text input as book, movie, series, anime, or note — user confirms or corrects the type
+- **🔗 GitHub enrichment**: GitHub links automatically get description, language, stars, and topics via GitHub API (no AI)
 - **💾 GitHub integration**: Saves to `<repository>/inbox/pending/` as flat YAML files
 - **🖼️ Media archiving**: Photos and PDFs are permanently saved to `<repository>/inbox/assets/` with metadata in inbox/pending/
 - **🔁 Forwarded messages**: Automatically saved as Notes without additional prompts
 - **🔍 Deduplication**: Prevents duplicate entries via KV store (by title and URL)
-- **⌨️ Button-based UI**: All interactions via Telegram reply keyboards
+- **⌨️ Button-based UI**: All interactions via Telegram reply keyboards (Book/Movie/Series/Anime/Note + Cancel)
 - **🕒 Draft timeout**: State expires after 30 minutes — user is notified instead of silently reinterpreting old input
 
 ## 🏗 Architecture
@@ -25,7 +26,7 @@ Telegram → Cloudflare Worker
   ├── Cloudflare KV (state + dedup, 30 min TTL)
   ├── Detector (URL → provider)
   ├── Resolver (GitHub API → metadata, no AI)
-  ├── Cloudflare AI (JSON Schema mode, temperature 0.15)
+  ├── Cloudflare AI (JSON Schema mode, temperature 0.15) — text input only
   └── GitHub API → <repository>/inbox/pending/
           ├── <repository>/inbox/assets/  (for photos/PDFs)
           └── [Hermes] → LLM wiki
@@ -111,9 +112,9 @@ User: ⏭ Skip
 Bot: ✅ Saved: inbox/pending/2026-07-08_tokio.yaml
 ```
 
-GitHub links are auto-detected as `Link` type. The bot fetches real metadata (name, description, language, stars, topics) via GitHub API — no AI needed.
+All URLs are saved as `Link` type — no status or rating, just an optional comment. GitHub links are enriched with real metadata (stars, language, description) via GitHub API. YouTube links, articles, and any other URLs use the same flow.
 
-### Send a title (text input with AI analysis + human confirmation)
+### Send a title (text input — AI classifies, user confirms)
 
 ```
 User: Clean Architecture
@@ -158,7 +159,7 @@ User: ⏭ Skip
 Bot: ✅ Saved: inbox/pending/2026-07-08_youtube-video.yaml
 ```
 
-YouTube links are auto-detected as `Link` type — no status/rating, just an optional comment.
+YouTube links (and all other URLs) are `Link` type — no status/rating, just an optional comment.
 
 ### Send a photo or PDF
 
@@ -221,19 +222,16 @@ processed: false
 
 Optional fields (`author`, `year`, `language`, `stars`, `rating`, `comment`, `description`, `season`, `raw_text`) are omitted when empty.
 
-## 🎯 Content Types & Statuses
+For media items (photos/PDFs), additional metadata is saved when available:
+- `asset_sha256` — SHA-256 hash of the archived file
+- `asset_mime` — MIME type (e.g. `image/jpeg`, `application/pdf`)
+- `asset_width`, `asset_height` — image dimensions (photos only)
 
-The bot recognizes five content types. Only **Book**, **Movie**, **Series**, and **Anime** get the full status/rating/comment flow — these are the only types where "did I finish it, was it good" is a meaningful question. Everything else is either a **Link** (URL) or a **Note** (plain text / media).
+## 🎯 Content Types & Flows
 
-### Statuses (context-aware labels)
+The bot recognizes six content types. Only **Book**, **Movie**, **Series**, and **Anime** get the full flow — these are the only types where "did I finish it, was it good" is meaningful. Everything else is either a **Link** (any URL) or a **Note** (plain text / media / forwarded message).
 
-| Status | Book | Movie/Series/Anime |
-|--------|------|--------------------|
-| 📋 Backlog | To-read | To-watch |
-| ✅ Done | Read | Watched |
-| ❌ Dropped | Dropped | Dropped |
-
-### Content Types
+### Type flows
 
 | Type | Button | Flow |
 |------|--------|------|
@@ -244,15 +242,47 @@ The bot recognizes five content types. Only **Book**, **Movie**, **Series**, and
 | 🔗 Link | (auto) | Comment only (no status/rating) |
 | 📝 Note | Note | Comment only (no status/rating) |
 
+### Status labels by type
+
+| Status | Book | Movie / Series / Anime | Link / Note |
+|--------|------|------------------------|-------------|
+| 📋 Backlog | To-read | To-watch | (no status) |
+| ✅ Done | Read | Watched | (no status) |
+| ❌ Dropped | Dropped | Dropped | (no status) |
+
+- **Backlog** → goes directly to comment (no rating)
+- **Done / Dropped** → asks for rating, then comment
+
+## 🔍 How each input type is processed
+
+### URLs (any)
+Bot immediately saves as `Link` type. Asks only for an optional comment.  
+Exception: GitHub URLs are enriched with description, language, stars via GitHub API.
+
+### Text messages
+AI classifies the text as one of: book, movie, series, anime, or note.  
+User can confirm the suggestion or pick a different type.  
+- Book/Movie/Series/Anime → full status → (season) → rating → comment flow  
+- Note → saved immediately
+
+### Photos / PDFs
+Saved as `Note` type. Filename caption is used as title if present.  
+The file is permanently archived to `inbox/assets/` to avoid Telegram file_id expiration.  
+Metadata (SHA-256, MIME type, dimensions) is saved alongside the item.
+
+### Forwarded messages  
+Automatically saved as `Note` with a `forwarded` tag — no prompts.
+
 ### AI Analysis Details
 
 - **JSON Schema mode**: Workers AI `response_format` with `json_schema` guarantees valid structured output — no manual JSON parsing
 - **Model**: `@cf/meta/llama-3.1-8b-instruct-fp8-fast` by default (configurable via `AI_MODEL`)
 - **Temperature**: 0.15 (low — deterministic classification, not creative generation)
-- **Extracted fields**: `type` (enum: book/movie/series/anime/note), `title` (required), `author`, `year`, `description`, `tags`
+- **Classifies into**: `type` (enum: book/movie/series/anime/note), `title` (required), `author`, `year`, `description`, `tags`
 - **Human-in-the-loop**: AI result is shown as a suggestion — user confirms or changes type before proceeding
+- **URLs are NOT sent to AI**: URL detection is purely rule-based (no AI cost)
 
-### GitHub Metadata Resolution (no AI)
+### GitHub Enrichment (no AI)
 
 When a user sends a GitHub link, the bot fetches real metadata via GitHub API:
 - `title` → actual repository name (not URL slug)
@@ -286,7 +316,7 @@ When a user sends a GitHub link, the bot fetches real metadata via GitHub API:
 When a user sends a photo or PDF:
 1. The bot downloads the file from Telegram's servers via `getFile` API
 2. The file is permanently saved to `<repository>/inbox/assets/YYYY-MM-DD_slug.{jpg|pdf}`
-3. A metadata entry is saved to `inbox/pending/` with an `asset:` tag pointing to the archived file
+3. A metadata entry is saved to `inbox/pending/` with `asset_sha256`, `asset_mime`, and dimensions
 4. If the download or GitHub upload fails, the bot falls back to tagging the Telegram `file_id` so the item is still captured
 
 This is important because Telegram `file_id`s can expire and are only resolvable within the same bot token.

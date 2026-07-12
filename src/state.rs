@@ -90,6 +90,10 @@ pub struct PendingItem {
     pub comment: Option<String>,
     pub description: Option<String>,
     pub tags: Vec<String>,
+    pub asset_sha256: Option<String>,
+    pub asset_mime: Option<String>,
+    pub asset_width: Option<i64>,
+    pub asset_height: Option<i64>,
     pub processed: bool,
 }
 
@@ -115,6 +119,10 @@ impl PendingItem {
             comment: None,
             description: None,
             tags: Vec::new(),
+            asset_sha256: None,
+            asset_mime: None,
+            asset_width: None,
+            asset_height: None,
             processed: false,
         }
     }
