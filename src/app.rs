@@ -142,6 +142,7 @@ async fn handle_forwarded(env: Env, chat_id: i64, text: String) -> Result<()> {
 
     let mut item = PendingItem::new(text, KnowledgeType::Note);
     item.source = "telegram".to_string();
+    item.raw_text = Some(item.title.clone());
     item.tags.push("forwarded".to_string());
 
     save_and_finish(env, &bot_token, &dedup_kv, chat_id, item).await?;
@@ -167,6 +168,12 @@ async fn handle_media(env: Env, chat_id: i64, media_type: &str, file_id: &str, c
 
     let mut item = PendingItem::new(title, KnowledgeType::Note);
     item.source = "telegram".to_string();
+    if let Some(ref c) = caption {
+        let trimmed = c.trim();
+        if !trimmed.is_empty() {
+            item.raw_text = Some(trimmed.to_string());
+        }
+    }
     if is_forwarded {
         item.tags.push("forwarded".to_string());
     }
@@ -273,6 +280,7 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
             UserState::AwaitingType { raw_text, .. } => {
                 let mut item = PendingItem::new(raw_text, kt.clone());
                 item.source = "telegram".to_string();
+                item.raw_text = Some(item.title.clone());
                 proceed_with_item(env, &bot_token, &kv, &dedup_kv, &state_key, chat_id, kt, item).await?;
             }
             UserState::AwaitingAiConfirm { mut item } => {
@@ -397,6 +405,7 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
             KnowledgeType::Link,
         );
         item.source = "telegram".to_string();
+        item.raw_text = Some(text.to_string());
         item.provider = detected.provider.clone();
         item.url = Some(detected.url.clone());
         item.description = detected.description.clone();
@@ -421,6 +430,41 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
                         Err(e) => {
                             log_event!("error", "resolver.github.failed", "error={:?}", e);
                         }
+                    }
+                }
+            }
+        } else if item.provider == ResourceProvider::Youtube {
+            if let Some(ref url) = item.url {
+                match Resolver::resolve_youtube(url).await {
+                    Ok(Some((title, author))) => {
+                        item.title = title;
+                        item.author = author;
+                    }
+                    Ok(None) => {
+                        log_event!("warn", "resolver.youtube.no_result", "url={}", url);
+                    }
+                    Err(e) => {
+                        log_event!("error", "resolver.youtube.failed", "error={:?}", e);
+                    }
+                }
+            }
+        } else if detected.title.is_none() {
+            // Generic fallback for any other provider whose title couldn't be
+            // guessed from the URL alone (arbitrary web pages, forum threads,
+            // etc.) — fetch the page and pull <title>/description mechanically.
+            if let Some(ref url) = item.url {
+                match Resolver::resolve_web_title(url).await {
+                    Ok(Some((title, description))) => {
+                        item.title = title;
+                        if item.description.is_none() {
+                            item.description = description;
+                        }
+                    }
+                    Ok(None) => {
+                        log_event!("warn", "resolver.web.no_result", "url={}", url);
+                    }
+                    Err(e) => {
+                        log_event!("error", "resolver.web.failed", "error={:?}", e);
                     }
                 }
             }

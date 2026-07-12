@@ -82,6 +82,116 @@ impl Resolver {
             None
         }
     }
+
+    /// YouTube's public oEmbed endpoint — no API key needed, and far more
+    /// reliable than guessing a title from the URL (which for youtube.com
+    /// is just the opaque video ID).
+    pub async fn resolve_youtube(url: &str) -> Result<Option<(String, Option<String>)>> {
+        let oembed_url = format!(
+            "https://www.youtube.com/oembed?url={}&format=json",
+            Self::percent_encode(url)
+        );
+
+        let mut req_init = RequestInit::new();
+        req_init.with_method(Method::Get);
+        let req = Request::new_with_init(&oembed_url, &req_init)?;
+        let mut resp = Fetch::Request(req).send().await?;
+
+        if resp.status_code() != 200 {
+            return Ok(None);
+        }
+
+        let body: serde_json::Value = resp.json().await?;
+        let title = body.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let author = body.get("author_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+        Ok(title.map(|t| (t, author)))
+    }
+
+    /// Generic fallback for any other web page: fetch the HTML and pull out
+    /// <title> and a meta description. No AI involved — this is mechanical
+    /// extraction, which is both cheaper and more reliable than asking a
+    /// model to guess a page's title from a URL alone.
+    pub async fn resolve_web_title(url: &str) -> Result<Option<(String, Option<String>)>> {
+        let mut req_init = RequestInit::new();
+        req_init.with_method(Method::Get);
+        let req = Request::new_with_init(url, &req_init)?;
+        let mut resp = match Fetch::Request(req).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                crate::log_event!("warn", "resolver.web.fetch_failed", "error={:?}", e);
+                return Ok(None);
+            }
+        };
+
+        if resp.status_code() != 200 {
+            return Ok(None);
+        }
+
+        let html = resp.text().await?;
+        // Title/description are always near the top of <head> — no need to
+        // scan a whole large page.
+        let snippet_len = html.len().min(80_000);
+        let snippet = &html[..snippet_len];
+
+        let title = Self::extract_tag_content(snippet, "title")
+            .map(|t| Self::decode_html_entities(t.trim()))
+            .filter(|t| !t.is_empty());
+        let description = Self::extract_meta_description(snippet)
+            .map(|d| Self::decode_html_entities(d.trim()))
+            .filter(|d| !d.is_empty());
+
+        Ok(title.map(|t| (t, description)))
+    }
+
+    fn extract_tag_content(html: &str, tag: &str) -> Option<String> {
+        let lower = html.to_lowercase();
+        let open_tag = format!("<{}", tag);
+        let start = lower.find(&open_tag)?;
+        let after_open = lower[start..].find('>')? + start + 1;
+        let close_tag = format!("</{}>", tag);
+        let end_rel = lower[after_open..].find(&close_tag)?;
+        Some(html[after_open..after_open + end_rel].to_string())
+    }
+
+    fn extract_meta_description(html: &str) -> Option<String> {
+        let lower = html.to_lowercase();
+        for marker in ["name=\"description\"", "property=\"og:description\""] {
+            if let Some(pos) = lower.find(marker) {
+                let tag_start = lower[..pos].rfind("<meta")?;
+                let tag_end = lower[pos..].find('>').map(|e| e + pos)?;
+                let tag = &html[tag_start..tag_end];
+                let tag_lower = tag.to_lowercase();
+                if let Some(c_pos) = tag_lower.find("content=\"") {
+                    let content_start = c_pos + "content=\"".len();
+                    if let Some(end_rel) = tag[content_start..].find('"') {
+                        return Some(tag[content_start..content_start + end_rel].to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn decode_html_entities(s: &str) -> String {
+        s.replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+    }
+
+    fn percent_encode(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for b in s.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+                _ => out.push_str(&format!("%{:02X}", b)),
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -105,6 +215,38 @@ mod tests {
         assert_eq!(
             Resolver::parse_github_url("https://example.com"),
             None
+        );
+    }
+
+    #[test]
+    fn extract_tag_content_should_find_title() {
+        let html = "<html><head><title>Statamic - Flat-file CMS</title></head></html>";
+        assert_eq!(
+            Resolver::extract_tag_content(html, "title"),
+            Some("Statamic - Flat-file CMS".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_meta_description_should_find_og_description() {
+        let html = r#"<meta property="og:description" content="A simple, powerful CMS">"#;
+        assert_eq!(
+            Resolver::extract_meta_description(html),
+            Some("A simple, powerful CMS".to_string())
+        );
+    }
+
+    #[test]
+    fn decode_html_entities_should_unescape_common_entities() {
+        assert_eq!(Resolver::decode_html_entities("Tom &amp; Jerry"), "Tom & Jerry");
+        assert_eq!(Resolver::decode_html_entities("&quot;quoted&quot;"), "\"quoted\"");
+    }
+
+    #[test]
+    fn percent_encode_should_escape_reserved_chars() {
+        assert_eq!(
+            Resolver::percent_encode("https://youtu.be/abc?x=1"),
+            "https%3A%2F%2Fyoutu.be%2Fabc%3Fx%3D1"
         );
     }
 }

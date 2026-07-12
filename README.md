@@ -189,6 +189,7 @@ Forwarded messages are automatically saved as Notes without any prompts.
 |---------|--------|
 | `/start` | Show welcome message |
 | `/cancel` | Cancel current draft and clear state |
+| `/clear` | Clear dedup store — treat all previously saved items as new again |
 
 ## 📁 Saved File Format (YAML)
 
@@ -204,6 +205,7 @@ url: "https://www.goodreads.com/book/show/123"
 type: book
 status: read
 title: "Clean Architecture"
+raw_text: "Clean Architecture"
 author: "Robert C. Martin"
 year: 2017
 rating: 9
@@ -217,7 +219,7 @@ processed: false
 ---
 ```
 
-Fields like `author`, `year`, `language`, `stars`, `rating`, `comment`, `description`, and `season` are omitted when empty.
+Optional fields (`author`, `year`, `language`, `stars`, `rating`, `comment`, `description`, `season`, `raw_text`) are omitted when empty.
 
 ## 🎯 Content Types & Statuses
 

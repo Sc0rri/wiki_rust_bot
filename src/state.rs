@@ -73,6 +73,14 @@ pub struct PendingItem {
     pub knowledge_type: KnowledgeType,
     pub status: ContentStatus,
     pub title: String,
+    /// The original, unprocessed text this item came from — the raw message
+    /// text (before AI picked a title), or a photo/PDF caption. Kept
+    /// separate from `title` (which can be AI-derived or a generic
+    /// placeholder for links) and `comment` (a follow-up the user adds
+    /// interactively), so the source material survives even if the derived
+    /// title turns out wrong or generic — useful for reprocessing later
+    /// with a better model, without needing to go back to Telegram.
+    pub raw_text: Option<String>,
     pub author: Option<String>,
     pub language: Option<String>,
     pub year: Option<i32>,
@@ -97,6 +105,7 @@ impl PendingItem {
             knowledge_type,
             status: ContentStatus::Backlog,
             title,
+            raw_text: None,
             author: None,
             language: None,
             year: None,

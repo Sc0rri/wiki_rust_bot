@@ -126,6 +126,7 @@ impl AiService {
             .unwrap_or_default();
 
         let mut item = PendingItem::new(title, knowledge_type);
+        item.raw_text = Some(fallback_title.to_string());
         item.author = author;
         item.year = year;
         item.description = description;
@@ -164,6 +165,7 @@ mod tests {
         assert_eq!(item.title, "Sapiens");
         assert_eq!(item.author.as_deref(), Some("Harari"));
         assert_eq!(item.year, Some(2011));
+        assert_eq!(item.raw_text.as_deref(), Some("fallback"));
     }
 
     #[test]

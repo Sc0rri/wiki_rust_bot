@@ -134,6 +134,12 @@ impl GitHubService {
         yaml.push_str(&format!("type: {}\n", item.knowledge_type.label().to_lowercase()));
         yaml.push_str(&format!("status: {}\n", item.status.label(&item.knowledge_type).to_lowercase()));
         yaml.push_str(&format!("title: \"{}\"\n", item.title.replace('"', "\\\"")));
+
+        if let Some(ref raw) = item.raw_text {
+            if raw != &item.title {
+                yaml.push_str(&format!("raw_text: \"{}\"\n", raw.replace('"', "\\\"")));
+            }
+        }
         
         if let Some(ref author) = item.author {
             yaml.push_str(&format!("author: \"{}\"\n", author.replace('"', "\\\"")));
