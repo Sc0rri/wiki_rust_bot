@@ -1,4 +1,4 @@
-use crate::state::{KnowledgeType, PendingItem};
+use crate::state::{KnowledgeType, LinkAnalysis, PendingItem};
 use crate::get_env_or_secret;
 use worker::*;
 
@@ -44,12 +44,21 @@ impl AiService {
     /// classify it again adds nothing. What's actually valuable is a short
     /// summary and topic tags, given what we already fetched (title +
     /// whatever description came from the page/API). Returns (summary, topics).
-    pub async fn enrich_link(env: &Env, title: &str, existing_description: Option<&str>, url: &str) -> Result<Option<(String, Vec<String>)>> {
+    /// For links, the type is already known (it's a Link) — asking AI to
+    /// classify it again adds nothing. What's actually valuable is a short
+    /// summary and topic tags, given what we already fetched (title +
+    /// whatever description came from the page/API). A struct (not a tuple)
+    /// so more fields (entities, difficulty, reading_time, ...) can be added
+    /// later without changing the call signature.
+    pub async fn enrich_link(env: &Env, title: &str, existing_description: Option<&str>, url: &str) -> Result<Option<LinkAnalysis>> {
         let context = existing_description.unwrap_or("");
         let prompt = format!(
             "A link was saved with title \"{}\" (url: {}). Existing description: \"{}\".\n\
-             Write a one-sentence summary of what this is and why it might be interesting, \
-             and list 2-5 short topic tags (technologies, concepts, subject areas).",
+             Explain in 1-2 sentences: what this resource is, why it's useful, and who would benefit from it.\n\
+             Write a factual summary — avoid promotional or marketing language, and don't just restate the title.\n\
+             Then extract 2-5 topic tags. Use canonical technology/concept names \
+             (e.g. \"Docker\" not \"docker containers\", \"Rust\" not \"rust-lang\") \
+             so the same technology is never tagged two different ways.",
             title, url, context
         );
 
@@ -75,7 +84,7 @@ impl AiService {
             .unwrap_or_default();
 
         match summary {
-            Some(s) if !s.is_empty() => Ok(Some((s, topics))),
+            Some(s) if !s.is_empty() => Ok(Some(LinkAnalysis { summary: s, topics })),
             _ => Ok(None),
         }
     }

@@ -6,7 +6,7 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 
 - **📚 Content types**: Book, Movie, Series, Anime, Link, Note
 - **🔗 Smart URL detection**: GitHub, YouTube, Goodreads, IMDb/Kinopoisk, arXiv, Coursera/Udemy/Stepik, Habr, Wikipedia, etc.
-- **🎯 Statuses**: Backlog, Done, Dropped — displayed as To-read/Read for books, To-watch/Watched for movies/series/anime
+- **🎯 Statuses**: Universal Telegram buttons — Backlog, Done, Dropped. Saved/displayed metadata is type-aware: To-read/Read for books, To-watch/Watched for movies/series/anime
 - **📺 Season tracking**: Series and Anime get an extra season prompt before rating
 - **⭐ Rating**: Rate 1-10 for Done or Dropped statuses (Backlog skips rating)
 - **💬 Comment**: Optional follow-up comment after rating
@@ -131,10 +131,10 @@ Bot: 🤖 Looks like: 📚 Book
 
 User: ✅ Confirm
 Bot: 📚 Status?
-     [📋 To-read] [✅ Read]
+     [📋 Backlog] [✅ Done]
      [❌ Dropped] [❌ Cancel]
 
-User: ✅ Read
+User: ✅ Done
 Bot: Rate 1-10 or skip:
 
 User: 9
@@ -242,7 +242,17 @@ The bot recognizes six content types. Only **Book**, **Movie**, **Series**, and 
 | 🔗 Link | (auto) | Comment only (no status/rating) |
 | 📝 Note | Note | Comment only (no status/rating) |
 
-### Status labels by type
+### Status buttons and saved values
+
+Telegram always shows the same status buttons for Book/Movie/Series/Anime:
+
+| Button | Meaning |
+|--------|---------|
+| 📋 Backlog | Planned for later |
+| ✅ Done | Finished |
+| ❌ Dropped | Abandoned |
+
+When the item is previewed or saved to YAML, the selected status is rendered with type-specific labels:
 
 | Status | Book | Movie / Series / Anime | Link / Note |
 |--------|------|------------------------|-------------|

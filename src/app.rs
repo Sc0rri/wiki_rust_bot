@@ -498,9 +498,9 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
         // for: a short summary and topic tags — not "what type is this",
         // which is already known (it's a Link).
         match AiService::enrich_link(&env, &item.title, item.description.as_deref(), &detected.url).await {
-            Ok(Some((summary, topics))) => {
-                item.description = Some(summary);
-                for topic in topics {
+            Ok(Some(analysis)) => {
+                item.description = Some(analysis.summary);
+                for topic in analysis.topics {
                     if !item.tags.contains(&topic) {
                         item.tags.push(topic);
                     }

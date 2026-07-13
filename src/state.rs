@@ -63,6 +63,15 @@ pub struct DetectedResource {
 }
 
 /// Full pending item with rich metadata
+/// Result of AI content analysis for a link — deliberately a struct, not a
+/// tuple, so fields like entities/difficulty/reading_time can be added later
+/// without changing enrich_link's call signature.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkAnalysis {
+    pub summary: String,
+    pub topics: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PendingItem {
     pub id: String,
