@@ -103,7 +103,6 @@ pub struct PendingItem {
     pub asset_mime: Option<String>,
     pub asset_width: Option<i64>,
     pub asset_height: Option<i64>,
-    pub processed: bool,
 }
 
 impl PendingItem {
@@ -132,7 +131,6 @@ impl PendingItem {
             asset_mime: None,
             asset_width: None,
             asset_height: None,
-            processed: false,
         }
     }
 }
@@ -373,7 +371,6 @@ mod tests {
         let item = PendingItem::new("Test Title".to_string(), KnowledgeType::Book);
         assert!(!item.id.is_empty());
         assert_eq!(item.source, "telegram");
-        assert!(!item.processed);
         assert_eq!(item.status, ContentStatus::Backlog);
     }
 }

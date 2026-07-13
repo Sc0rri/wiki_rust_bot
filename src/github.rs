@@ -189,7 +189,6 @@ impl GitHubService {
             yaml.push_str(&format!("asset_sha256: {}\n", sha));
         }
         
-        yaml.push_str(&format!("processed: {}\n", item.processed));
         yaml.push_str("---\n");
 
         yaml
@@ -221,7 +220,6 @@ mod tests {
         assert!(yaml.contains("provider: web"));
         assert!(yaml.contains("tags:"));
         assert!(yaml.contains("- \"rust\""));
-        assert!(yaml.contains("processed: false"));
         assert!(yaml.contains("id: "));
         assert!(yaml.contains("created: "));
         assert!(yaml.ends_with("---\n"));
