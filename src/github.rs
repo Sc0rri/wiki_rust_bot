@@ -2,6 +2,7 @@ use crate::get_env_or_secret;
 use crate::parser::ParserService;
 use crate::state::PendingItem;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use std::time::Duration;
 use worker::*;
 
 pub struct GitHubService;
@@ -298,6 +299,7 @@ impl GitHubService {
     /// line). Best-effort — only used as a fallback when the Git Data API
     /// commit fails (see `flush_logs_only`). The main logging path now uses
     /// the buffered log + Git Data API atomic commit.
+    /// Retries up to 3 times on 409 conflicts.
     pub async fn append_log(env: &Env, level: &str, name: &str, message: &str) {
         let token = match env.secret("GITHUB_TOKEN") {
             Ok(t) => t.to_string(),
@@ -311,35 +313,39 @@ impl GitHubService {
 
         let new_line = format!("{}\n", crate::logger::format_log_line(level, name, message));
 
-        // Try to GET existing file content (SHA + base64 body).
-        let get_headers = Headers::new();
-        let _ = get_headers.set("Authorization", &format!("Bearer {}", token));
-        let _ = get_headers.set("User-Agent", "wiki-rust-bot");
+        for attempt in 0..3 {
+            // Try to GET existing file content (SHA + base64 body).
+            let get_headers = Headers::new();
+            let _ = get_headers.set("Authorization", &format!("Bearer {}", token));
+            let _ = get_headers.set("User-Agent", "wiki-rust-bot");
 
-        let mut get_req_init = RequestInit::new();
-        get_req_init.with_method(Method::Get);
-        get_req_init.with_headers(get_headers);
+            let mut get_req_init = RequestInit::new();
+            get_req_init.with_method(Method::Get);
+            get_req_init.with_headers(get_headers);
 
-        let (existing_sha, existing_body) =
-            if let Ok(req) = Request::new_with_init(&url, &get_req_init) {
-                if let Ok(mut resp) = Fetch::Request(req).send().await {
-                    if resp.status_code() == 200 {
-                        if let Ok(val) = resp.json::<serde_json::Value>().await {
-                            let sha = val
-                                .get("sha")
-                                .and_then(|s| s.as_str())
-                                .map(|s| s.to_string());
-                            let content = val
-                                .get("content")
-                                .and_then(|c| c.as_str())
-                                .map(|c| c.replace('\n', "").replace('\r', ""))
-                                .and_then(|c| {
-                                    use base64::Engine;
-                                    base64::engine::general_purpose::STANDARD.decode(c).ok()
-                                })
-                                .and_then(|bytes| String::from_utf8(bytes).ok())
-                                .unwrap_or_default();
-                            (sha, content)
+            let (existing_sha, existing_body) =
+                if let Ok(req) = Request::new_with_init(&url, &get_req_init) {
+                    if let Ok(mut resp) = Fetch::Request(req).send().await {
+                        if resp.status_code() == 200 {
+                            if let Ok(val) = resp.json::<serde_json::Value>().await {
+                                let sha = val
+                                    .get("sha")
+                                    .and_then(|s| s.as_str())
+                                    .map(|s| s.to_string());
+                                let content = val
+                                    .get("content")
+                                    .and_then(|c| c.as_str())
+                                    .map(|c| c.replace('\n', "").replace('\r', ""))
+                                    .and_then(|c| {
+                                        use base64::Engine;
+                                        base64::engine::general_purpose::STANDARD.decode(c).ok()
+                                    })
+                                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                                    .unwrap_or_default();
+                                (sha, content)
+                            } else {
+                                (None, String::new())
+                            }
                         } else {
                             (None, String::new())
                         }
@@ -348,40 +354,52 @@ impl GitHubService {
                     }
                 } else {
                     (None, String::new())
+                };
+
+            let new_content = format!("{}{}\n", existing_body, new_line);
+            let content_base64 = base64::engine::general_purpose::STANDARD.encode(&new_content);
+
+            let mut payload = serde_json::json!({
+                "message": format!("Log: {}", name),
+                "content": content_base64,
+                "branch": "main"
+            });
+            if let Some(sha) = existing_sha {
+                payload
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("sha".to_string(), serde_json::Value::String(sha));
+            }
+
+            let put_headers = Headers::new();
+            let _ = put_headers.set("Authorization", &format!("Bearer {}", token));
+            let _ = put_headers.set("Content-Type", "application/json");
+            let _ = put_headers.set("User-Agent", "wiki-rust-bot");
+
+            let mut put_req_init = RequestInit::new();
+            put_req_init.with_method(Method::Put);
+            put_req_init.with_headers(put_headers);
+            if let Ok(body) = serde_json::to_string(&payload) {
+                put_req_init.with_body(Some(body.into()));
+            }
+
+            if let Ok(req) = Request::new_with_init(&url, &put_req_init) {
+                if let Ok(mut resp) = Fetch::Request(req).send().await {
+                    if resp.status_code() == 201 || resp.status_code() == 200 {
+                        return; // Success
+                    }
+                    
+                    // If 409 conflict and we have retries left, try again
+                    if resp.status_code() == 409 && attempt < 2 {
+                        let delay = (attempt + 1) * 100;
+                        let _ = worker::Delay::from(Duration::from_millis(delay)).await;
+                        continue;
+                    }
                 }
-            } else {
-                (None, String::new())
-            };
-
-        let new_content = format!("{}{}\n", existing_body, new_line);
-        let content_base64 = base64::engine::general_purpose::STANDARD.encode(&new_content);
-
-        let mut payload = serde_json::json!({
-            "message": format!("Log: {}", name),
-            "content": content_base64,
-            "branch": "main"
-        });
-        if let Some(sha) = existing_sha {
-            payload
-                .as_object_mut()
-                .unwrap()
-                .insert("sha".to_string(), serde_json::Value::String(sha));
-        }
-
-        let put_headers = Headers::new();
-        let _ = put_headers.set("Authorization", &format!("Bearer {}", token));
-        let _ = put_headers.set("Content-Type", "application/json");
-        let _ = put_headers.set("User-Agent", "wiki-rust-bot");
-
-        let mut put_req_init = RequestInit::new();
-        put_req_init.with_method(Method::Put);
-        put_req_init.with_headers(put_headers);
-        if let Ok(body) = serde_json::to_string(&payload) {
-            put_req_init.with_body(Some(body.into()));
-        }
-
-        if let Ok(req) = Request::new_with_init(&url, &put_req_init) {
-            let _ = Fetch::Request(req).send().await;
+            }
+            
+            // If we get here, either non-409 error or final attempt failed
+            return;
         }
     }
 
@@ -389,44 +407,68 @@ impl GitHubService {
 
     async fn put_text_file(token: &str, repo: &str, path: &str, content: &str) -> Result<()> {
         let content_base64 = STANDARD.encode(content);
-        let sha = Self::get_file_sha(token, repo, path).await.ok();
         let url = format!("https://api.github.com/repos/{}/contents/{}", repo, path);
 
-        let mut payload = serde_json::json!({
-            "message": format!("Write {}", path),
-            "content": content_base64,
-            "branch": "main"
-        });
-        if let Some(sha) = sha {
-            payload
-                .as_object_mut()
-                .unwrap()
-                .insert("sha".to_string(), serde_json::Value::String(sha));
-        }
+        let mut last_error = None;
+        for attempt in 0..3 {
+            let sha = Self::get_file_sha(token, repo, path).await.ok();
+            
+            let mut payload = serde_json::json!({
+                "message": format!("Write {}", path),
+                "content": content_base64.clone(),
+                "branch": "main"
+            });
+            if let Some(ref sha) = sha {
+                payload
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("sha".to_string(), serde_json::Value::String(sha.clone()));
+            }
 
-        let headers = Headers::new();
-        headers.set("Authorization", &format!("Bearer {}", token))?;
-        headers.set("Content-Type", "application/json")?;
-        headers.set("User-Agent", "wiki-rust-bot")?;
+            let headers = Headers::new();
+            headers.set("Authorization", &format!("Bearer {}", token))?;
+            headers.set("Content-Type", "application/json")?;
+            headers.set("User-Agent", "wiki-rust-bot")?;
 
-        let mut req_init = RequestInit::new();
-        req_init.with_method(Method::Put);
-        req_init.with_headers(headers);
-        req_init.with_body(Some(serde_json::to_string(&payload)?.into()));
+            let mut req_init = RequestInit::new();
+            req_init.with_method(Method::Put);
+            req_init.with_headers(headers);
+            req_init.with_body(Some(serde_json::to_string(&payload)?.into()));
 
-        let req = Request::new_with_init(&url, &req_init)?;
-        let mut resp = Fetch::Request(req).send().await?;
+            let req = Request::new_with_init(&url, &req_init)?;
+            let mut resp = Fetch::Request(req).send().await?;
 
-        if resp.status_code() != 201 && resp.status_code() != 200 {
+            if resp.status_code() == 201 || resp.status_code() == 200 {
+                return Ok(());
+            }
+
             let err_text = resp.text().await?;
-            return Err(worker::Error::from(format!(
-                "GitHub Contents API error ({}): {}",
-                resp.status_code(),
-                err_text
-            )));
+            let err_str = format!("{}: {}", resp.status_code(), err_text);
+            last_error = Some(err_str);
+
+            // If it's a 409 conflict (SHA mismatch), retry after a short delay
+            if resp.status_code() == 409 && attempt < 2 {
+                crate::log_event!(
+                    "warn",
+                    "github.put_text_file.conflict",
+                    "path={} attempt={} retrying...",
+                    path,
+                    attempt + 1
+                );
+                // Small delay to let concurrent operations complete
+                let delay = (attempt + 1) * 100;
+                let _ = worker::Delay::from(Duration::from_millis(delay)).await;
+                continue;
+            }
+
+            // For other errors, don't retry
+            break;
         }
 
-        Ok(())
+        Err(worker::Error::from(format!(
+            "GitHub Contents API error ({}): failed after 3 attempts",
+            last_error.unwrap_or_default()
+        )))
     }
 
     /// PUTs a file to the GitHub Contents API. If `sha` is Some, updates an
@@ -513,78 +555,108 @@ impl GitHubService {
 
     /// Creates a tree with the given files and commits it to `refs/heads/main`
     /// in a single atomic operation. Returns the new commit SHA.
+    /// Retries up to 3 times on 422 errors (concurrent ref updates).
     async fn commit_files(
         token: &str,
         repo: &str,
         message: &str,
         files: &[(&str, &str)],
     ) -> Result<String> {
-        // 1. Get the current HEAD commit SHA and tree SHA.
-        let ref_url = format!("https://api.github.com/repos/{}/git/ref/heads/main", repo);
-        let ref_resp = Self::github_get(token, &ref_url).await?;
-        let head_sha = ref_resp["object"]["sha"]
-            .as_str()
-            .ok_or_else(|| worker::Error::from("GitHub: no object.sha in ref response"))?
-            .to_string();
+        let mut last_error = None;
+        
+        for attempt in 0..3 {
+            // 1. Get the current HEAD commit SHA and tree SHA.
+            let ref_url = format!("https://api.github.com/repos/{}/git/ref/heads/main", repo);
+            let ref_resp = match Self::github_get(token, &ref_url).await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_error = Some(e);
+                    break;
+                }
+            };
+            let head_sha = ref_resp["object"]["sha"]
+                .as_str()
+                .ok_or_else(|| worker::Error::from("GitHub: no object.sha in ref response"))?
+                .to_string();
 
-        let commit_url = format!(
-            "https://api.github.com/repos/{}/git/commits/{}",
-            repo, head_sha
-        );
-        let commit_resp = Self::github_get(token, &commit_url).await?;
-        let base_tree_sha = commit_resp["tree"]["sha"]
-            .as_str()
-            .ok_or_else(|| worker::Error::from("GitHub: no tree.sha in commit response"))?
-            .to_string();
+            let commit_url = format!(
+                "https://api.github.com/repos/{}/git/commits/{}",
+                repo, head_sha
+            );
+            let commit_resp = Self::github_get(token, &commit_url).await?;
+            let base_tree_sha = commit_resp["tree"]["sha"]
+                .as_str()
+                .ok_or_else(|| worker::Error::from("GitHub: no tree.sha in commit response"))?
+                .to_string();
 
-        // 2. Build tree entries.
-        let mut tree_entries: Vec<serde_json::Value> = Vec::new();
+            // 2. Build tree entries.
+            let mut tree_entries: Vec<serde_json::Value> = Vec::new();
 
-        for (path, content) in files {
-            let blob_sha = Self::create_blob(token, repo, content).await?;
-            tree_entries.push(serde_json::json!({
-                "path": path,
-                "mode": "100644",
-                "type": "blob",
-                "sha": blob_sha,
-            }));
+            for (path, content) in files {
+                let blob_sha = Self::create_blob(token, repo, content).await?;
+                tree_entries.push(serde_json::json!({
+                    "path": path,
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": blob_sha,
+                }));
+            }
+
+            // 3. Create a new tree with the base tree + our new entries.
+            let tree_url = format!("https://api.github.com/repos/{}/git/trees", repo);
+            let tree_payload = serde_json::json!({
+                "base_tree": base_tree_sha,
+                "tree": tree_entries,
+            });
+            let tree_resp = Self::github_post(token, &tree_url, &tree_payload).await?;
+            let new_tree_sha = tree_resp["sha"]
+                .as_str()
+                .ok_or_else(|| worker::Error::from("GitHub: no sha in tree response"))?
+                .to_string();
+
+            // 4. Create a commit pointing to the new tree.
+            let commit_url = format!("https://api.github.com/repos/{}/git/commits", repo);
+            let commit_payload = serde_json::json!({
+                "message": message,
+                "tree": new_tree_sha,
+                "parents": [head_sha],
+            });
+            let commit_resp = Self::github_post(token, &commit_url, &commit_payload).await?;
+            let new_commit_sha = commit_resp["sha"]
+                .as_str()
+                .ok_or_else(|| worker::Error::from("GitHub: no sha in commit response"))?
+                .to_string();
+
+            // 5. Update the branch reference to point to the new commit.
+            //    force=true is safe: this bot is the only writer to the repo.
+            let ref_url = format!("https://api.github.com/repos/{}/git/refs/heads/main", repo);
+            let ref_payload = serde_json::json!({
+                "sha": new_commit_sha,
+                "force": true,
+            });
+            match Self::github_patch(token, &ref_url, &ref_payload).await {
+                Ok(_) => return Ok(new_commit_sha),
+                Err(e) => {
+                    let err_str = e.to_string();
+                    // 422 = ref was updated by another commit → retry
+                    if err_str.contains("422") && attempt < 2 {
+                        crate::log_event!(
+                            "warn",
+                            "github.commit_files.conflict",
+                            "attempt={} retrying...",
+                            attempt + 1
+                        );
+                        let delay = (attempt + 1) * 200;
+                        let _ = worker::Delay::from(Duration::from_millis(delay)).await;
+                        continue;
+                    }
+                    last_error = Some(e);
+                    break;
+                }
+            }
         }
 
-        // 3. Create a new tree with the base tree + our new entries.
-        let tree_url = format!("https://api.github.com/repos/{}/git/trees", repo);
-        let tree_payload = serde_json::json!({
-            "base_tree": base_tree_sha,
-            "tree": tree_entries,
-        });
-        let tree_resp = Self::github_post(token, &tree_url, &tree_payload).await?;
-        let new_tree_sha = tree_resp["sha"]
-            .as_str()
-            .ok_or_else(|| worker::Error::from("GitHub: no sha in tree response"))?
-            .to_string();
-
-        // 4. Create a commit pointing to the new tree.
-        let commit_url = format!("https://api.github.com/repos/{}/git/commits", repo);
-        let commit_payload = serde_json::json!({
-            "message": message,
-            "tree": new_tree_sha,
-            "parents": [head_sha],
-        });
-        let commit_resp = Self::github_post(token, &commit_url, &commit_payload).await?;
-        let new_commit_sha = commit_resp["sha"]
-            .as_str()
-            .ok_or_else(|| worker::Error::from("GitHub: no sha in commit response"))?
-            .to_string();
-
-        // 5. Update the branch reference to point to the new commit.
-        //    force=true is safe: this bot is the only writer to the repo.
-        let ref_url = format!("https://api.github.com/repos/{}/git/refs/heads/main", repo);
-        let ref_payload = serde_json::json!({
-            "sha": new_commit_sha,
-            "force": true,
-        });
-        let _ = Self::github_patch(token, &ref_url, &ref_payload).await?;
-
-        Ok(new_commit_sha)
+        Err(last_error.unwrap_or_else(|| worker::Error::from("GitHub: commit_files failed after 3 attempts")))
     }
 
     /// Creates a Git blob and returns its SHA.
