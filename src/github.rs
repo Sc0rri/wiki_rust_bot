@@ -43,8 +43,8 @@ impl GitHubService {
         }
     }
 
-    /// Saves a pending item to inbox/pending/ and atomically appends all
-    /// buffered log lines to inbox/logs/<date>.log in a single commit.
+    /// Saves a pending item to inbox/pending/ and atomically writes all
+    /// buffered log lines to inbox/logs/<same-slug>.log in a single commit.
     ///
     /// Uses the Git Data API (create tree → create commit → update ref)
     /// instead of the Contents API, so both files land in one commit.
@@ -60,16 +60,17 @@ impl GitHubService {
         let pending_path = format!("inbox/pending/{}", filename);
         let pending_content = Self::generate_yaml(item);
 
-        // Build the log file content (append to existing or start fresh).
-        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        let log_path = format!("inbox/logs/{}.log", date);
+        // Per-item log file: same slug as the pending YAML, but .log extension
+        // and in inbox/logs/ instead of inbox/pending/.
+        let log_filename = filename.replace(".yaml", ".log");
+        let log_path = format!("inbox/logs/{}", log_filename);
         let log_content = log_lines.join("\n") + "\n";
 
         // Use Git Data API to commit both files atomically.
         let commit_sha = Self::commit_files(
             &token,
             &repo,
-            &format!("Add {}: {} [log: {}]", item.knowledge_type.label().to_lowercase(), item.title, date),
+            &format!("Add {}: {}", item.knowledge_type.label().to_lowercase(), item.title),
             &[
                 (&pending_path, &pending_content),
                 (&log_path, &log_content),

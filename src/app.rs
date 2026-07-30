@@ -16,6 +16,7 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
         Ok(update) => update,
         Err(err) => {
             log_event!("warn", "telegram.update.invalid_json", "error={}", err);
+            flush_remaining_logs(&env, &ctx).await;
             return Ok(());
         }
     };
@@ -23,12 +24,14 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
     let allowed_username = get_env_or_secret(&env, "ALLOWED_USERNAME", "");
     if allowed_username.is_empty() {
         log_event!("error", "config.allowed_username_missing");
+        flush_remaining_logs(&env, &ctx).await;
         return Ok(());
     }
 
     if let Some(msg) = update.message {
         let sender = msg.from.as_ref();
         if !username_is_allowed(sender.and_then(|u| u.username.as_ref()), &allowed_username) {
+            flush_remaining_logs(&env, &ctx).await;
             return Ok(());
         }
 
@@ -81,6 +84,7 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                                 Err(e) => log_event!("error", "clarification.reply.failed", "error={:?}", e),
                             }
                         });
+                        flush_remaining_logs(&env, &ctx).await;
                         return Ok(());
                     }
                 }
@@ -103,6 +107,7 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                         log_event!("error", "telegram.photo.failed", "error={:?}", e);
                     }
                 });
+                flush_remaining_logs(&env, &ctx).await;
                 return Ok(());
             }
         }
@@ -121,11 +126,13 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                     }
                 }
             });
+            flush_remaining_logs(&env, &ctx).await;
             return Ok(());
         }
 
         let text = msg.text.clone().unwrap_or_default().trim().to_string();
         if text.is_empty() {
+            flush_remaining_logs(&env, &ctx).await;
             return Ok(());
         }
 
@@ -137,6 +144,7 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                     log_event!("error", "telegram.forwarded.failed", "error={:?}", e);
                 }
             });
+            flush_remaining_logs(&env, &ctx).await;
             return Ok(());
         }
 
@@ -147,6 +155,7 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                     log_event!("error", "telegram.command.failed", "error={:?}", e);
                 }
             });
+            flush_remaining_logs(&env, &ctx).await;
             return Ok(());
         }
 
@@ -159,15 +168,24 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
         });
     }
 
-    // Flush any remaining buffered log lines (from commands, non-save paths)
-    // to inbox/logs/<date>.log. This is a best-effort background task.
-    let env_clone = env.clone();
-    ctx.wait_until(async move {
-        let remaining = crate::logger::flush_logs();
-        GitHubService::flush_logs_only(&env_clone, &remaining).await;
-    });
+    // Flush remaining buffered logs (from the text processing path).
+    flush_remaining_logs(&env, &ctx).await;
 
     Ok(())
+}
+
+/// Flushes any buffered log lines to inbox/logs/<date>.log via a background
+/// task. Called before every early return in handle_update so that logs from
+/// commands, media, forwarded messages, etc. are persisted even when no
+/// pending item is being saved.
+async fn flush_remaining_logs(env: &Env, ctx: &Context) {
+    let env_clone = env.clone();
+    let remaining = crate::logger::flush_logs();
+    if !remaining.is_empty() {
+        ctx.wait_until(async move {
+            GitHubService::flush_logs_only(&env_clone, &remaining).await;
+        });
+    }
 }
 
 fn username_is_allowed(username: Option<&String>, allowed: &str) -> bool {
