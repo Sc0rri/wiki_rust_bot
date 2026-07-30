@@ -96,28 +96,23 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                         let answer = msg.text.clone().unwrap_or_default();
                         let item_id = item_id.to_string();
                         let env_clone = env.clone();
-                        ctx.wait_until(async move {
-                            match GitHubService::save_reply_to_inbox(&env_clone, &item_id, &answer)
-                                .await
-                            {
-                                Ok(_) => {
-                                    let bot_token = get_env_or_secret(&env_clone, "BOT_TOKEN", "");
-                                    let _ = TelegramService::send_message(
-                                        &bot_token,
-                                        chat_id,
-                                        "Спасибо, уточнил(а)! 🙌",
-                                        None,
-                                    )
-                                    .await;
-                                }
-                                Err(e) => log_event!(
-                                    "error",
-                                    "clarification.reply.failed",
-                                    "error={:?}",
-                                    e
-                                ),
+                        match GitHubService::save_reply_to_inbox(&env_clone, &item_id, &answer)
+                            .await
+                        {
+                            Ok(_) => {
+                                let bot_token = get_env_or_secret(&env_clone, "BOT_TOKEN", "");
+                                let _ = TelegramService::send_message(
+                                    &bot_token,
+                                    chat_id,
+                                    "Спасибо, уточнил(а)! 🙌",
+                                    None,
+                                )
+                                .await;
                             }
-                        });
+                            Err(e) => {
+                                log_event!("error", "clarification.reply.failed", "error={:?}", e)
+                            }
+                        }
                         flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
                         return Ok(());
                     }
@@ -127,6 +122,19 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
 
         if let Some(photos) = &msg.photo {
             if let Some(photo) = photos.last().cloned() {
+                log_event!(
+                    "info",
+                    "telegram.media.received",
+                    "chat_id={} type=image is_forwarded={} caption={}",
+                    chat_id,
+                    msg.forward_origin.is_some(),
+                    msg.caption
+                        .as_deref()
+                        .unwrap_or_default()
+                        .chars()
+                        .take(80)
+                        .collect::<String>()
+                );
                 let file_id = photo.file_id.clone();
                 let caption = msg.caption.clone();
                 let is_forwarded = msg.forward_origin.is_some();
@@ -136,27 +144,33 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                     mime: Some("image/jpeg".to_string()), // Telegram always sends photos as JPEG
                 };
                 let env_clone = env.clone();
-                ctx.wait_until(async move {
-                    if let Err(e) = handle_media(
-                        env_clone,
-                        chat_id,
-                        "image",
-                        &file_id,
-                        caption,
-                        is_forwarded,
-                        meta,
-                    )
-                    .await
-                    {
-                        log_event!("error", "telegram.photo.failed", "error={:?}", e);
-                    }
-                });
-                flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::DeferUntilItemSave).await;
+                if let Err(e) = handle_media(
+                    env_clone,
+                    chat_id,
+                    "image",
+                    &file_id,
+                    caption,
+                    is_forwarded,
+                    meta,
+                )
+                .await
+                {
+                    log_event!("error", "telegram.photo.failed", "error={:?}", e);
+                }
+                flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
                 return Ok(());
             }
         }
 
         if let Some(doc) = msg.document.as_ref().cloned() {
+            log_event!(
+                "info",
+                "telegram.document.received",
+                "chat_id={} filename={} mime={}",
+                chat_id,
+                doc.file_name.as_deref().unwrap_or("<unknown>"),
+                doc.mime_type.as_deref().unwrap_or("<unknown>")
+            );
             let caption = msg.caption.clone();
             let is_forwarded = msg.forward_origin.is_some();
             let meta = MediaMeta {
@@ -165,27 +179,24 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                 mime: doc.mime_type.clone(),
             };
             let env_clone = env.clone();
-            ctx.wait_until(async move {
-                let file_name = doc.file_name.unwrap_or_default();
-                let file_id = doc.file_id.clone();
-                if file_name.to_lowercase().ends_with(".pdf") {
-                    if let Err(e) = handle_media(
-                        env_clone,
-                        chat_id,
-                        "pdf",
-                        &file_id,
-                        caption,
-                        is_forwarded,
-                        meta,
-                    )
-                    .await
-                    {
-                        log_event!("error", "telegram.pdf.failed", "error={:?}", e);
-                    }
+            let file_name = doc.file_name.unwrap_or_default();
+            let file_id = doc.file_id.clone();
+            if file_name.to_lowercase().ends_with(".pdf") {
+                if let Err(e) = handle_media(
+                    env_clone,
+                    chat_id,
+                    "pdf",
+                    &file_id,
+                    caption,
+                    is_forwarded,
+                    meta,
+                )
+                .await
+                {
+                    log_event!("error", "telegram.pdf.failed", "error={:?}", e);
                 }
-            });
-            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::DeferUntilItemSave).await;
-            return Ok(());
+            }
+            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
         }
 
         let text = msg.text.clone().unwrap_or_default().trim().to_string();
@@ -195,24 +206,27 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
         }
 
         if msg.forward_origin.is_some() {
+            log_event!(
+                "info",
+                "telegram.forwarded.received",
+                "chat_id={} text_chars={}",
+                chat_id,
+                text.chars().count()
+            );
             let env_clone = env.clone();
             let text_clone = text.clone();
-            ctx.wait_until(async move {
-                if let Err(e) = handle_forwarded(env_clone, chat_id, text_clone).await {
-                    log_event!("error", "telegram.forwarded.failed", "error={:?}", e);
-                }
-            });
+            if let Err(e) = handle_forwarded(env_clone, chat_id, text_clone).await {
+                log_event!("error", "telegram.forwarded.failed", "error={:?}", e);
+            }
             flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
             return Ok(());
         }
 
         if text.starts_with('/') {
             let env_clone = env.clone();
-            ctx.wait_until(async move {
-                if let Err(e) = handle_command(env_clone, chat_id, &text).await {
-                    log_event!("error", "telegram.command.failed", "error={:?}", e);
-                }
-            });
+            if let Err(e) = handle_command(env_clone, chat_id, &text).await {
+                log_event!("error", "telegram.command.failed", "error={:?}", e);
+            }
             flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
             return Ok(());
         }
@@ -225,11 +239,9 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
             text.chars().count()
         );
         let env_clone = env.clone();
-        ctx.wait_until(async move {
-            if let Err(e) = handle_text(env_clone, chat_id, text).await {
-                log_event!("error", "telegram.text.failed", "error={:?}", e);
-            }
-        });
+        if let Err(e) = handle_text(env_clone, chat_id, text).await {
+            log_event!("error", "telegram.text.failed", "error={:?}", e);
+        }
     }
 
     // Flush remaining buffered logs (from the text processing path).

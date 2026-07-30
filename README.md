@@ -20,7 +20,7 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 - **🕒 Draft timeout**: Draft state expires after 30 minutes; likely expired rating replies are reported instead of being reprocessed as new input
 - **💬 Clarification replies**: When an external script sends a clarifying question with `[ref:<id>]` marker, the user's reply is saved to `inbox/pending/<id>.reply.yaml`
 - **📝 Telegram chat_id**: Each saved item includes the Telegram `chat_id` so external scripts can send follow-up questions back to the right chat
-- **📋 Debug logging**: Incoming Telegram messages are logged to `inbox/logs/<date>.log` for debugging
+- **📋 Debug logging**: Telegram webhook events, incoming messages, and runtime errors are written to a single shared daily log at `inbox/logs/YYYY-MM-DD.log` for debugging
 - **🔒 YAML safety**: All string fields are properly escaped (backslash, quotes, newlines, tabs) to prevent YAML parsing issues
 
 ## 🏗 Architecture
@@ -34,7 +34,7 @@ Telegram → Cloudflare Worker
   └── GitHub API → <repository>/inbox/
           ├── pending/        (YAML items + reply files)
           ├── assets/         (photos/PDFs)
-          ├── logs/           (debug logs, <date>.log)
+          ├── logs/           (shared daily debug logs, YYYY-MM-DD.log)
           └── [Hermes] → LLM wiki
 ```
 
@@ -83,6 +83,9 @@ npx wrangler secret put BOT_TOKEN
 npx wrangler secret put ALLOWED_USERNAME
 npx wrangler secret put GITHUB_TOKEN
 npx wrangler secret put GITHUB_REPO
+# Optional: disable GitHub log writes entirely
+# npx wrangler secret put LOG_TO_FILE
+# Set value to false to disable the shared daily log file
 # Optional: npx wrangler secret put AI_MODEL
 # Default: @cf/openai/gpt-oss-120b
 ```
@@ -292,10 +295,20 @@ Automatically saved as `Note` with a `forwarded` tag — no prompts.
 
 ## 📋 Debug Logging
 
-Every incoming Telegram message is logged to `inbox/logs/<date>.log` in the GitHub repository:
+Every Telegram request and bot event is written into a single daily file at `inbox/logs/YYYY-MM-DD.log` in the GitHub repository. The same file contains:
+- webhook receipts from Telegram
+- incoming message summaries
+- normal runtime logs
+- GitHub/Telegram errors rendered as readable blocks with separators
+
+Example:
 
 ```
 2026-07-30T11:54:44.123Z [debug] telegram.message.incoming - chat_id=123 from=Some(456) text_preview="..." has_text=true has_caption=false has_photo=false has_document=false has_reply=false has_forward=false
+2026-07-30T11:54:45.555Z [info] telegram.webhook.received - path=/webhook bytes=982
+=== ERROR github.api.post_failed ===
+2026-07-30T11:54:45.555Z [error] github.api.post_failed - status=500 body=bad gateway
+================================
 ```
 
 The log entry includes:
@@ -304,7 +317,7 @@ The log entry includes:
 - `text_preview` — first 50 characters of the message text
 - Boolean flags for: `has_text`, `has_caption`, `has_photo`, `has_document`, `has_reply`, `has_forward`
 
-Logs are best-effort: if a concurrent write races, one entry may be lost. This is acceptable for debug logs.
+Logs are best-effort, but the current implementation keeps webhook events, normal bot logs, and error blocks in one shared day file to make debugging easier.
 
 ### AI Analysis Details
 
