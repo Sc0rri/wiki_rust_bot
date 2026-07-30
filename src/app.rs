@@ -260,7 +260,7 @@ async fn flush_remaining_logs_if_needed(env: &Env, ctx: &Context, mode: LogFlush
     }
 
     let env_clone = env.clone();
-    let remaining = crate::logger::flush_logs();
+    let remaining = crate::logger::take_logs();
     if !remaining.is_empty() {
         ctx.wait_until(async move {
             GitHubService::flush_logs_only(&env_clone, &remaining).await;
@@ -847,7 +847,7 @@ async fn save_and_finish(
     )
     .await?;
 
-    let log_lines = crate::logger::flush_logs();
+    let log_lines = crate::logger::take_logs();
     match GitHubService::save_to_inbox(&env, &item, &log_lines).await {
         Ok(path) => {
             // Dedup marks are bookkeeping only — if writing them fails, the
@@ -871,6 +871,7 @@ async fn save_and_finish(
             .await?;
         }
         Err(e) => {
+            crate::logger::restore_logs(&log_lines);
             // Write the error directly via append_log (Contents API) so it's
             // visible in the log file even if the Git Data API commit failed.
             let error_msg = format!("save_to_inbox failed: {:?}", e);

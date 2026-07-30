@@ -26,7 +26,7 @@ pub fn set_log_enabled(enabled: bool) {
 
 /// Drains the log buffer and returns all accumulated lines.
 /// The buffer is cleared after this call.
-pub fn flush_logs() -> Vec<String> {
+pub fn take_logs() -> Vec<String> {
     let mut result = Vec::new();
     LOG_BUFFER.with(|buf| {
         let mut buf = buf.borrow_mut();
@@ -34,6 +34,22 @@ pub fn flush_logs() -> Vec<String> {
         buf.clear();
     });
     result
+}
+
+/// Restores previously taken log lines back into the buffer.
+pub fn restore_logs(lines: &[String]) {
+    if lines.is_empty() {
+        return;
+    }
+    LOG_BUFFER.with(|buf| {
+        let mut buf = buf.borrow_mut();
+        buf.extend(lines.iter().cloned());
+    });
+}
+
+/// Backward-compatible alias used by older callers.
+pub fn flush_logs() -> Vec<String> {
+    take_logs()
 }
 
 pub fn format_log_line(
@@ -75,6 +91,18 @@ mod tests {
         assert!(line.contains("github.api.post_failed"));
         assert!(line.contains("status=500 body=bad gateway"));
     }
+
+    #[test]
+    fn take_and_restore_logs_should_round_trip() {
+        super::set_log_enabled(true);
+        crate::log_event!("info", "logger.test", "round_trip");
+        let lines = super::take_logs();
+        assert_eq!(lines.len(), 1);
+        super::restore_logs(&lines);
+        let restored = super::take_logs();
+        assert_eq!(restored.len(), 1);
+        assert!(restored[0].contains("logger.test"));
+    }
 }
 
 #[macro_export]
@@ -87,7 +115,10 @@ macro_rules! log_event {
             let message = format!($($arg)*);
             let line = $crate::logger::format_log_line($level, $name, &message);
             // Always print to the Worker console for immediate visibility.
+            #[cfg(target_arch = "wasm32")]
             ::worker::console_log!("{}", line);
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = &line;
             // Buffer for GitHub log file only if file logging is enabled.
             $crate::logger::LOG_ENABLED.with(|flag| {
                 if *flag.borrow() {

@@ -80,6 +80,18 @@ pub struct CallbackQuery {
 
 pub struct TelegramService;
 
+fn preview_for_log(text: &str, limit: usize) -> String {
+    let mut chars = text.chars();
+    let mut out = String::new();
+    for _ in 0..limit {
+        match chars.next() {
+            Some(ch) => out.push(ch),
+            None => break,
+        }
+    }
+    out.trim().to_string()
+}
+
 impl TelegramService {
     pub async fn send_message(
         bot_token: &str,
@@ -87,6 +99,14 @@ impl TelegramService {
         text: &str,
         keyboard: Option<serde_json::Value>,
     ) -> Result<()> {
+        crate::log_event!(
+            "info",
+            "telegram.bot.reply",
+            "chat_id={} text_preview={}",
+            chat_id,
+            preview_for_log(text, 160)
+        );
+
         let url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);
         let mut payload = serde_json::json!({
             "chat_id": chat_id,
@@ -250,4 +270,15 @@ async fn send_telegram_api(url: &str, payload: &serde_json::Value) -> Result<()>
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_for_log_should_truncate_long_text() {
+        assert_eq!(preview_for_log("Hello world from bot", 12), "Hello world");
+        assert_eq!(preview_for_log("Short", 20), "Short");
+    }
 }

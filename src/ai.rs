@@ -129,7 +129,7 @@ impl AiService {
         let model = get_env_or_secret(env, "AI_MODEL", "@cf/openai/gpt-oss-120b");
 
         let input = serde_json::json!({
-            "messages": [{"role": "user", "content": prompt}],
+            "prompt": prompt,
             "temperature": 0.15,
             "response_format": {
                 "type": "json_schema",
@@ -141,7 +141,8 @@ impl AiService {
         let value = match result {
             Ok(v) => v,
             Err(e) => {
-                crate::log_event!("warn", "ai.analysis.request_failed", "error={:?}", e);
+                let message = Self::format_error_message(&e.to_string());
+                crate::log_event!("warn", "ai.analysis.request_failed", "error={}", message);
                 return Ok(None);
             }
         };
@@ -150,6 +151,23 @@ impl AiService {
             Some(obj) if obj.is_object() => Ok(Some(obj.clone())),
             Some(serde_json::Value::String(text)) => Ok(Self::extract_json(text)),
             _ => Ok(None),
+        }
+    }
+
+    fn format_error_message(error: &str) -> String {
+        let lower = error.to_lowercase();
+        if lower.contains("oneof") || lower.contains("required properties") {
+            format!(
+                "Workers AI rejected the request because the request/response format was unsupported (unsupported request format). Original error: {}",
+                error
+            )
+        } else if lower.contains("unsupported request format") || lower.contains("invalid schema") {
+            format!(
+                "Workers AI rejected the request because the request/response format was unsupported (unsupported request format). Original error: {}",
+                error
+            )
+        } else {
+            error.to_string()
         }
     }
 
@@ -284,5 +302,12 @@ mod tests {
     fn extract_json_should_return_none_for_empty() {
         assert!(AiService::extract_json("").is_none());
         assert!(AiService::extract_json("null").is_none());
+    }
+
+    #[test]
+    fn format_error_should_explain_ai_schema_mismatch() {
+        let msg = AiService::format_error_message("AiError: 5006: oneOf at '/' not met");
+        assert!(msg.contains("Workers AI"));
+        assert!(msg.contains("unsupported request format"));
     }
 }

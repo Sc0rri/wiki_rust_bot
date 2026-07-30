@@ -134,6 +134,7 @@ impl GitHubService {
         {
             Ok(_sha) => {}
             Err(e) => {
+                crate::logger::restore_logs(log_lines);
                 // Fallback to Contents API if Git Data API fails.
                 crate::log_event!("warn", "github.flush_logs.fallback", "error={:?}", e);
                 for line in log_lines {
