@@ -615,7 +615,8 @@ async fn save_and_finish(env: Env, bot_token: &str, dedup_kv: &worker::kv::KvSto
 
     TelegramService::send_message(bot_token, chat_id, "⏳ Saving...", Some(TelegramService::remove_keyboard())).await?;
 
-    match GitHubService::save_to_inbox(&env, &item).await {
+    let log_lines = crate::logger::flush_logs();
+    match GitHubService::save_to_inbox(&env, &item, &log_lines).await {
         Ok(path) => {
             // Dedup marks are bookkeeping only — if writing them fails, the
             // save itself already succeeded and the user must still see that.

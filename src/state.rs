@@ -108,8 +108,15 @@ pub struct PendingItem {
     pub asset_height: Option<i64>,
 }
 
+fn strip_invisible_chars(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
+        .collect()
+}
+
 impl PendingItem {
     pub fn new(title: String, knowledge_type: KnowledgeType, chat_id: i64) -> Self {
+        let title = strip_invisible_chars(&title);
         let now = chrono::Utc::now();
         Self {
             id: format!("{}-{}", now.format("%Y%m%d%H%M%S"), title.chars().take(20).collect::<String>().to_lowercase().replace(' ', "-")),

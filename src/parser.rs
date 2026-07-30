@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn generate_filename_should_create_flat_yaml() {
-        let item = PendingItem::new("Lord of the Rings".to_string(), KnowledgeType::Book);
+        let item = PendingItem::new("Lord of the Rings".to_string(), KnowledgeType::Book, 0);
         let result = ParserService::generate_filename(&item);
         assert!(result.ends_with(".yaml"));
         assert!(!result.contains('/'));

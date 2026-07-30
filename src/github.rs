@@ -45,77 +45,60 @@ impl GitHubService {
                 "github.asset.failed",
                 "status={} body={}",
                 resp.status_code(),
-                err_text.chars().count()
+                err_text
             );
             return Err(worker::Error::from(format!(
                 "GitHub API error: {}",
-                err_text.chars().take(200).collect::<String>()
+                err_text
             )));
         }
 
         Ok(path)
     }
 
+    /// Saves a pending item to inbox/pending/ and atomically appends all
+    /// buffered log lines to inbox/logs/<date>.log in a single commit.
+    ///
+    /// Uses the Git Data API (create tree → create commit → update ref)
+    /// instead of the Contents API, so both files land in one commit.
     pub async fn save_to_inbox(
         env: &Env,
         item: &PendingItem,
+        log_lines: &[String],
     ) -> Result<String> {
         let token = env.secret("GITHUB_TOKEN")?.to_string();
         let repo = get_env_or_secret(env, "GITHUB_REPO", "Sc0rri/wiki");
-        
+
         let filename = ParserService::generate_filename(item);
-        let path = format!("inbox/pending/{}", filename);
-        
-        let content = Self::generate_yaml(item);
-        let content_base64 = STANDARD.encode(&content);
+        let pending_path = format!("inbox/pending/{}", filename);
+        let pending_content = Self::generate_yaml(item);
 
-        let url = format!(
-            "https://api.github.com/repos/{}/contents/{}",
-            repo, path
-        );
+        // Build the log file content (append to existing or start fresh).
+        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let log_path = format!("inbox/logs/{}.log", date);
+        let log_content = log_lines.join("\n") + "\n";
 
-        let payload = serde_json::json!({
-            "message": format!("Add {}: {}", item.knowledge_type.label().to_lowercase(), item.title),
-            "content": content_base64,
-            "branch": "main"
-        });
-
-        let headers = Headers::new();
-        headers.set("Authorization", &format!("Bearer {}", token))?;
-        headers.set("Content-Type", "application/json")?;
-        headers.set("User-Agent", "wiki-rust-bot")?;
-
-        let mut req_init = RequestInit::new();
-        req_init.with_method(Method::Put);
-        req_init.with_headers(headers);
-        req_init.with_body(Some(serde_json::to_string(&payload)?.into()));
-
-        let req = Request::new_with_init(&url, &req_init)?;
-        let mut resp = Fetch::Request(req).send().await?;
-
-        if resp.status_code() != 201 && resp.status_code() != 200 {
-            let err_text = resp.text().await?;
-            crate::log_event!(
-                "error",
-                "github.commit.failed",
-                "status={} body={}",
-                resp.status_code(),
-                err_text.chars().count()
-            );
-            return Err(worker::Error::from(format!(
-                "GitHub API error: {}",
-                err_text.chars().take(200).collect::<String>()
-            )));
-        }
+        // Use Git Data API to commit both files atomically.
+        let commit_sha = Self::commit_files(
+            &token,
+            &repo,
+            &format!("Add {}: {} [log: {}]", item.knowledge_type.label().to_lowercase(), item.title, date),
+            &[
+                (&pending_path, &pending_content),
+                (&log_path, &log_content),
+            ],
+        ).await?;
 
         crate::log_event!(
             "info",
             "github.commit.success",
-            "path={}",
-            path
+            "pending={} log={} commit={}",
+            pending_path,
+            log_path,
+            commit_sha
         );
 
-        Ok(path)
+        Ok(pending_path)
     }
 
     /// Writes a user's answer to a clarifying question the compiler asked,
@@ -161,13 +144,13 @@ impl GitHubService {
             crate::log_event!(
                 "error",
                 "github.reply.failed",
-                "status={} body_chars={}",
+                "status={} body={}",
                 resp.status_code(),
-                err_text.chars().count()
+                err_text
             );
             return Err(worker::Error::from(format!(
                 "GitHub API error: {}",
-                err_text.chars().take(200).collect::<String>()
+                err_text
             )));
         }
 
@@ -186,6 +169,10 @@ impl GitHubService {
     /// line). Best-effort: if GET fails (e.g. first write of the day) it
     /// starts a new file; if a concurrent write races, one may be lost —
     /// acceptable for debug logs.
+    ///
+    /// This is kept for standalone log writes (e.g. from reply saving or
+    /// background tasks). The main save_to_inbox path now uses the Git Data
+    /// API to commit pending + log atomically.
     pub async fn append_log(env: &Env, level: &str, name: &str, message: &str) {
         let token = match env.secret("GITHUB_TOKEN") {
             Ok(t) => t.to_string(),
@@ -264,6 +251,181 @@ impl GitHubService {
         if let Ok(req) = Request::new_with_init(&url, &put_req_init) {
             let _ = Fetch::Request(req).send().await;
         }
+    }
+
+    // ── Git Data API helpers ──────────────────────────────────────────────
+
+    /// Creates a tree with the given files and commits it to `refs/heads/main`
+    /// in a single atomic operation. Returns the new commit SHA.
+    ///
+    /// Each entry is `(path, content_string)` — content is UTF-8 text, not
+    /// base64 (the API accepts raw text in the tree object).
+    async fn commit_files(
+        token: &str,
+        repo: &str,
+        message: &str,
+        files: &[(&str, &str)],
+    ) -> Result<String> {
+        // 1. Get the current HEAD commit SHA and tree SHA.
+        let ref_url = format!("https://api.github.com/repos/{}/git/ref/heads/main", repo);
+        let ref_resp = Self::github_get(token, &ref_url).await?;
+        let head_sha = ref_resp["object"]["sha"]
+            .as_str()
+            .ok_or_else(|| worker::Error::from("GitHub: no object.sha in ref response"))?
+            .to_string();
+
+        let commit_url = format!("https://api.github.com/repos/{}/git/commits/{}", repo, head_sha);
+        let commit_resp = Self::github_get(token, &commit_url).await?;
+        let base_tree_sha = commit_resp["tree"]["sha"]
+            .as_str()
+            .ok_or_else(|| worker::Error::from("GitHub: no tree.sha in commit response"))?
+            .to_string();
+
+        // 2. Build tree entries. For each file, we need to check if it already
+        //    exists (to get its mode) or create it as a new blob.
+        let mut tree_entries: Vec<serde_json::Value> = Vec::new();
+
+        for (path, content) in files {
+            // Create a blob for the file content.
+            let blob_sha = Self::create_blob(token, repo, content).await?;
+            tree_entries.push(serde_json::json!({
+                "path": path,
+                "mode": "100644",
+                "type": "blob",
+                "sha": blob_sha,
+            }));
+        }
+
+        // 3. Create a new tree with the base tree + our new entries.
+        let tree_url = format!("https://api.github.com/repos/{}/git/trees", repo);
+        let tree_payload = serde_json::json!({
+            "base_tree": base_tree_sha,
+            "tree": tree_entries,
+        });
+        let tree_resp = Self::github_post(token, &tree_url, &tree_payload).await?;
+        let new_tree_sha = tree_resp["sha"]
+            .as_str()
+            .ok_or_else(|| worker::Error::from("GitHub: no sha in tree response"))?
+            .to_string();
+
+        // 4. Create a commit pointing to the new tree.
+        let commit_url = format!("https://api.github.com/repos/{}/git/commits", repo);
+        let commit_payload = serde_json::json!({
+            "message": message,
+            "tree": new_tree_sha,
+            "parents": [head_sha],
+        });
+        let commit_resp = Self::github_post(token, &commit_url, &commit_payload).await?;
+        let new_commit_sha = commit_resp["sha"]
+            .as_str()
+            .ok_or_else(|| worker::Error::from("GitHub: no sha in commit response"))?
+            .to_string();
+
+        // 5. Update the branch reference to point to the new commit.
+        let ref_url = format!("https://api.github.com/repos/{}/git/refs/heads/main", repo);
+        let ref_payload = serde_json::json!({
+            "sha": new_commit_sha,
+            "force": false,
+        });
+        let ref_resp = Self::github_patch(token, &ref_url, &ref_payload).await?;
+        let _ = ref_resp; // we don't need the response body
+
+        Ok(new_commit_sha)
+    }
+
+    /// Creates a Git blob and returns its SHA.
+    async fn create_blob(token: &str, repo: &str, content: &str) -> Result<String> {
+        let url = format!("https://api.github.com/repos/{}/git/blobs", repo);
+        let payload = serde_json::json!({
+            "content": content,
+            "encoding": "utf-8",
+        });
+        let resp = Self::github_post(token, &url, &payload).await?;
+        resp["sha"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| worker::Error::from("GitHub: no sha in blob response"))
+    }
+
+    // ── Low-level HTTP helpers ────────────────────────────────────────────
+
+    async fn github_get(token: &str, url: &str) -> Result<serde_json::Value> {
+        let headers = Headers::new();
+        headers.set("Authorization", &format!("Bearer {}", token))?;
+        headers.set("User-Agent", "wiki-rust-bot")?;
+        headers.set("Accept", "application/vnd.github+json")?;
+
+        let mut req_init = RequestInit::new();
+        req_init.with_method(Method::Get);
+        req_init.with_headers(headers);
+
+        let req = Request::new_with_init(url, &req_init)?;
+        let mut resp = Fetch::Request(req).send().await?;
+
+        let status = resp.status_code();
+        let body = resp.text().await?;
+
+        if status < 200 || status >= 300 {
+            crate::log_event!("error", "github.api.get_failed", "status={} url={} body={}", status, url, body);
+            return Err(worker::Error::from(format!("GitHub GET {} failed: {}", url, body)));
+        }
+
+        serde_json::from_str(&body)
+            .map_err(|e| worker::Error::from(format!("GitHub GET {} JSON parse error: {}", url, e)))
+    }
+
+    async fn github_post(token: &str, url: &str, payload: &serde_json::Value) -> Result<serde_json::Value> {
+        let headers = Headers::new();
+        headers.set("Authorization", &format!("Bearer {}", token))?;
+        headers.set("Content-Type", "application/json")?;
+        headers.set("User-Agent", "wiki-rust-bot")?;
+        headers.set("Accept", "application/vnd.github+json")?;
+
+        let mut req_init = RequestInit::new();
+        req_init.with_method(Method::Post);
+        req_init.with_headers(headers);
+        req_init.with_body(Some(serde_json::to_string(payload)?.into()));
+
+        let req = Request::new_with_init(url, &req_init)?;
+        let mut resp = Fetch::Request(req).send().await?;
+
+        let status = resp.status_code();
+        let body = resp.text().await?;
+
+        if status < 200 || status >= 300 {
+            crate::log_event!("error", "github.api.post_failed", "status={} url={} body={}", status, url, body);
+            return Err(worker::Error::from(format!("GitHub POST {} failed: {}", url, body)));
+        }
+
+        serde_json::from_str(&body)
+            .map_err(|e| worker::Error::from(format!("GitHub POST {} JSON parse error: {}", url, e)))
+    }
+
+    async fn github_patch(token: &str, url: &str, payload: &serde_json::Value) -> Result<serde_json::Value> {
+        let headers = Headers::new();
+        headers.set("Authorization", &format!("Bearer {}", token))?;
+        headers.set("Content-Type", "application/json")?;
+        headers.set("User-Agent", "wiki-rust-bot")?;
+        headers.set("Accept", "application/vnd.github+json")?;
+
+        let mut req_init = RequestInit::new();
+        req_init.with_method(Method::Patch);
+        req_init.with_headers(headers);
+        req_init.with_body(Some(serde_json::to_string(payload)?.into()));
+
+        let req = Request::new_with_init(url, &req_init)?;
+        let mut resp = Fetch::Request(req).send().await?;
+
+        let status = resp.status_code();
+        let body = resp.text().await?;
+
+        if status < 200 || status >= 300 {
+            crate::log_event!("error", "github.api.patch_failed", "status={} url={} body={}", status, url, body);
+            return Err(worker::Error::from(format!("GitHub PATCH {} failed: {}", url, body)));
+        }
+
+        serde_json::from_str(&body)
+            .map_err(|e| worker::Error::from(format!("GitHub PATCH {} JSON parse error: {}", url, e)))
     }
 
     fn yaml_quote(s: &str) -> String {
