@@ -12,8 +12,12 @@ impl GitHubService {
     /// committed path. Unlike a Telegram file_id (which can expire), this is
     /// a permanent copy living in the private repo.
     ///
-    /// If the file already exists (409 Conflict), fetches the existing SHA
-    /// and retries with an update instead of a create.
+    /// The filename is derived from `item.id` (see
+    /// `ParserService::generate_asset_filename`), which already includes
+    /// second-level precision and the first 20 characters of the title with
+    /// full Unicode support, so collisions are extremely unlikely. If a 409
+    /// still occurs (e.g. the exact same file being saved twice), the error
+    /// is propagated — silent overwrites are not acceptable.
     pub async fn save_asset(env: &Env, filename: &str, bytes: &[u8]) -> Result<String> {
         let token = env.secret("GITHUB_TOKEN")?.to_string();
         let repo = get_env_or_secret(env, "GITHUB_REPO", "Sc0rri/wiki");
@@ -21,45 +25,19 @@ impl GitHubService {
         let path = format!("inbox/assets/{}", filename);
         let content_base64 = STANDARD.encode(bytes);
 
-        // Try to create the file without SHA (first attempt).
-        match Self::put_contents(&token, &repo, &path, &content_base64, None).await {
-            Ok(_) => {
-                crate::log_event!("info", "github.asset.created", "path={}", path);
-                Ok(path)
-            }
-            Err(e) => {
-                let err_str = e.to_string();
-                // 409 = file already exists → fetch its SHA and update.
-                if err_str.contains("409") || err_str.contains("is at") {
-                    crate::log_event!(
-                        "warn",
-                        "github.asset.conflict",
-                        "path={} retrying with sha",
-                        path
-                    );
-                    let sha = Self::get_file_sha(&token, &repo, &path).await?;
-                    Self::put_contents(&token, &repo, &path, &content_base64, Some(&sha)).await?;
-                    crate::log_event!("info", "github.asset.updated", "path={}", path);
-                    Ok(path)
-                } else {
-                    crate::log_event!(
-                        "error",
-                        "github.asset.failed",
-                        "status=409 body={}",
-                        err_str
-                    );
-                    Err(e)
-                }
-            }
-        }
+        Self::put_contents(&token, &repo, &path, &content_base64, None).await?;
+        crate::log_event!("info", "github.asset.created", "path={}", path);
+        Ok(path)
     }
 
     /// Saves a pending item to inbox/pending/ and appends the buffered log
     /// lines into the shared daily log file inbox/logs/<date>.log in a single
-    /// commit.
+    /// atomic commit.
     ///
     /// Uses the Git Data API (create tree → create commit → update ref)
     /// instead of the Contents API, so both files land in one commit.
+    /// This avoids the 409 race conditions that two separate Contents API
+    /// calls would cause when the bot processes multiple messages concurrently.
     pub async fn save_to_inbox(
         env: &Env,
         item: &PendingItem,
@@ -76,13 +54,18 @@ impl GitHubService {
         let log_path = format!("inbox/logs/{}.log", date);
         let log_content = Self::build_daily_log_content(&token, &repo, &date, log_lines).await?;
 
-        Self::put_text_file(&token, &repo, &pending_path, &pending_content).await?;
-        Self::put_text_file(&token, &repo, &log_path, &log_content).await?;
+        Self::commit_files(
+            &token,
+            &repo,
+            &format!("Pending: {} + logs [{}]", filename, date),
+            &[(&pending_path, &pending_content), (&log_path, &log_content)],
+        )
+        .await?;
 
         crate::log_event!(
             "info",
             "github.commit.success",
-            "pending={} log={} commit=contents-api",
+            "pending={} log={} commit=git-data-api",
             pending_path,
             log_path
         );

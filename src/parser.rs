@@ -32,18 +32,24 @@ impl ParserService {
         }
     }
 
+    /// Generates a filename for a pending-item YAML file.
+    ///
+    /// Uses `item.id` directly (which already encodes a timestamp and the
+    /// first 20 chars of the title with full Unicode support), so there's no
+    /// risk of different items collapsing to the same slug when the title is
+    /// non-ASCII — the bug that would otherwise silently lose data.
     pub fn generate_filename(item: &PendingItem) -> String {
-        let now = chrono::Utc::now().format("%Y-%m-%d_%H%M");
-        let slug = Self::slugify(&item.title);
-        format!("{}_{}.yaml", now, slug)
+        format!("{}.yaml", item.id)
     }
 
-    /// Same naming convention as generate_filename, so an asset and its
-    /// pending YAML entry are easy to correlate by eye in inbox/.
+    /// Generates a filename for an asset file (photo/PDF).
+    ///
+    /// Uses the same `item.id` as `generate_filename`, so an asset and its
+    /// pending YAML entry are easy to correlate by eye in inbox/. The ID
+    /// already includes second-level precision, so collisions are extremely
+    /// unlikely.
     pub fn generate_asset_filename(item: &PendingItem, extension: &str) -> String {
-        let now = chrono::Utc::now().format("%Y-%m-%d_%H%M");
-        let slug = Self::slugify(&item.title);
-        format!("{}_{}.{}", now, slug, extension)
+        format!("{}.{}", item.id, extension)
     }
 }
 
