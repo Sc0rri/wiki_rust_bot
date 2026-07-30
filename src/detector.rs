@@ -6,7 +6,7 @@ pub struct Detector;
 impl Detector {
     pub fn detect(url: &str) -> DetectedResource {
         let lower = url.to_lowercase();
-        
+
         let provider = if lower.contains("github.com") {
             ResourceProvider::Github
         } else if lower.contains("youtube.com") || lower.contains("youtu.be") {
@@ -17,7 +17,10 @@ impl Detector {
             ResourceProvider::Imdb
         } else if lower.contains("arxiv.org") {
             ResourceProvider::Arxiv
-        } else if lower.contains("coursera.org") || lower.contains("udemy.com") || lower.contains("stepik.org") {
+        } else if lower.contains("coursera.org")
+            || lower.contains("udemy.com")
+            || lower.contains("stepik.org")
+        {
             ResourceProvider::Coursera
         } else if lower.contains("habr.com") {
             ResourceProvider::Habr
@@ -50,7 +53,11 @@ impl Detector {
         let path_only = clean.split(['?', '#']).next().unwrap_or(clean);
 
         // Split into segments, skip domain (first segment)
-        let segments: Vec<&str> = path_only.split('/').skip(1).filter(|s| !s.is_empty()).collect();
+        let segments: Vec<&str> = path_only
+            .split('/')
+            .skip(1)
+            .filter(|s| !s.is_empty())
+            .collect();
 
         if segments.is_empty() {
             return None;
@@ -75,7 +82,11 @@ impl Detector {
 
         // Special handling: GitHub repo (owner/repo)
         if url.contains("github.com") && segments.len() >= 2 {
-            return Some(format!("{}/{}", segments[segments.len() - 2], segments.last().unwrap()));
+            return Some(format!(
+                "{}/{}",
+                segments[segments.len() - 2],
+                segments.last().unwrap()
+            ));
         }
 
         // Special handling: YouTube watch → no title available

@@ -32,7 +32,10 @@ impl DedupService {
     }
 
     pub fn url_key(url: &str) -> String {
-        format!("url:{}", Self::truncate_to_byte_limit(url, MAX_KEY_CONTENT_BYTES))
+        format!(
+            "url:{}",
+            Self::truncate_to_byte_limit(url, MAX_KEY_CONTENT_BYTES)
+        )
     }
 
     /// KV keys are capped at 512 bytes (UTF-8 encoded) by Cloudflare. A title
@@ -41,7 +44,10 @@ impl DedupService {
     /// 414 ... exceeds key length limit of 512") and dedup silently never
     /// registers for that item.
     pub fn title_key(title: &str) -> String {
-        format!("title:{}", Self::truncate_to_byte_limit(&title.to_lowercase(), MAX_KEY_CONTENT_BYTES))
+        format!(
+            "title:{}",
+            Self::truncate_to_byte_limit(&title.to_lowercase(), MAX_KEY_CONTENT_BYTES)
+        )
     }
 
     /// Truncates to at most `max_bytes` UTF-8 bytes, backing off to the
@@ -80,7 +86,13 @@ impl DedupService {
                     match kv.delete(&key.name).await {
                         Ok(_) => deleted += 1,
                         Err(e) => {
-                            crate::log_event!("warn", "dedup.clear.delete_failed", "key={} error={:?}", key.name, e);
+                            crate::log_event!(
+                                "warn",
+                                "dedup.clear.delete_failed",
+                                "key={} error={:?}",
+                                key.name,
+                                e
+                            );
                         }
                     }
                 }

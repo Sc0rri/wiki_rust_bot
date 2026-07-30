@@ -57,6 +57,10 @@ pub struct Message {
     /// Present on forwarded messages. We don't need to parse its contents —
     /// just knowing a message was forwarded is enough to route it to Note.
     pub forward_origin: Option<serde_json::Value>,
+    /// Present when this message is a reply to another one. We only care
+    /// about its `text` — to look for a "[ref:<id>]" marker we put in our
+    /// own clarifying questions.
+    pub reply_to_message: Option<Box<Message>>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -76,6 +80,18 @@ pub struct CallbackQuery {
 
 pub struct TelegramService;
 
+fn preview_for_log(text: &str, limit: usize) -> String {
+    let mut chars = text.chars();
+    let mut out = String::new();
+    for _ in 0..limit {
+        match chars.next() {
+            Some(ch) => out.push(ch),
+            None => break,
+        }
+    }
+    out.trim().to_string()
+}
+
 impl TelegramService {
     pub async fn send_message(
         bot_token: &str,
@@ -83,6 +99,14 @@ impl TelegramService {
         text: &str,
         keyboard: Option<serde_json::Value>,
     ) -> Result<()> {
+        crate::log_event!(
+            "info",
+            "telegram.bot.reply",
+            "chat_id={} text_preview={}",
+            chat_id,
+            preview_for_log(text, 160)
+        );
+
         let url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);
         let mut payload = serde_json::json!({
             "chat_id": chat_id,
@@ -101,14 +125,23 @@ impl TelegramService {
     /// file_id is stable but file_path/the download URL is short-lived — this
     /// must be called right before downloading, not cached.
     pub async fn get_file_path(bot_token: &str, file_id: &str) -> Result<Option<String>> {
-        let url = format!("https://api.telegram.org/bot{}/getFile?file_id={}", bot_token, file_id);
+        let url = format!(
+            "https://api.telegram.org/bot{}/getFile?file_id={}",
+            bot_token, file_id
+        );
         let mut req_init = RequestInit::new();
         req_init.with_method(Method::Get);
         let req = Request::new_with_init(&url, &req_init)?;
         let mut resp = Fetch::Request(req).send().await?;
         if resp.status_code() != 200 {
             let body = resp.text().await?;
-            crate::log_event!("warn", "telegram.getfile.failed", "status={} body_chars={}", resp.status_code(), body.chars().count());
+            crate::log_event!(
+                "warn",
+                "telegram.getfile.failed",
+                "status={} body_chars={}",
+                resp.status_code(),
+                body.chars().count()
+            );
             return Ok(None);
         }
         let value: serde_json::Value = resp.json().await?;
@@ -121,13 +154,19 @@ impl TelegramService {
 
     /// Downloads the raw bytes of a file previously resolved via get_file_path.
     pub async fn download_file(bot_token: &str, file_path: &str) -> Result<Vec<u8>> {
-        let url = format!("https://api.telegram.org/file/bot{}/{}", bot_token, file_path);
+        let url = format!(
+            "https://api.telegram.org/file/bot{}/{}",
+            bot_token, file_path
+        );
         let mut req_init = RequestInit::new();
         req_init.with_method(Method::Get);
         let req = Request::new_with_init(&url, &req_init)?;
         let mut resp = Fetch::Request(req).send().await?;
         if resp.status_code() != 200 {
-            return Err(worker::Error::from(format!("Telegram file download failed: status {}", resp.status_code())));
+            return Err(worker::Error::from(format!(
+                "Telegram file download failed: status {}",
+                resp.status_code()
+            )));
         }
         resp.bytes().await
     }
@@ -231,4 +270,15 @@ async fn send_telegram_api(url: &str, payload: &serde_json::Value) -> Result<()>
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_for_log_should_truncate_long_text() {
+        assert_eq!(preview_for_log("Hello world from bot", 12), "Hello world");
+        assert_eq!(preview_for_log("Short", 20), "Short");
+    }
 }

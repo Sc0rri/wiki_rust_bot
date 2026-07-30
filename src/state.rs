@@ -82,6 +82,9 @@ pub struct PendingItem {
     pub knowledge_type: KnowledgeType,
     pub status: ContentStatus,
     pub title: String,
+    /// The Telegram chat_id this item was submitted from — needed so the
+    /// external clarification script knows where to send follow-up questions.
+    pub chat_id: i64,
     /// The original, unprocessed text this item came from — the raw message
     /// text (before AI picked a title), or a photo/PDF caption. Kept
     /// separate from `title` (which can be AI-derived or a generic
@@ -105,11 +108,27 @@ pub struct PendingItem {
     pub asset_height: Option<i64>,
 }
 
+fn strip_invisible_chars(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
+        .collect()
+}
+
 impl PendingItem {
-    pub fn new(title: String, knowledge_type: KnowledgeType) -> Self {
+    pub fn new(title: String, knowledge_type: KnowledgeType, chat_id: i64) -> Self {
+        let title = strip_invisible_chars(&title);
         let now = chrono::Utc::now();
         Self {
-            id: format!("{}-{}", now.format("%Y%m%d%H%M%S"), title.chars().take(20).collect::<String>().to_lowercase().replace(' ', "-")),
+            id: format!(
+                "{}-{}",
+                now.format("%Y%m%d%H%M%S"),
+                title
+                    .chars()
+                    .take(20)
+                    .collect::<String>()
+                    .to_lowercase()
+                    .replace(' ', "-")
+            ),
             created: now.format("%Y-%m-%d").to_string(),
             source: "telegram".to_string(),
             provider: ResourceProvider::Direct,
@@ -117,6 +136,7 @@ impl PendingItem {
             knowledge_type,
             status: ContentStatus::Backlog,
             title,
+            chat_id,
             raw_text: None,
             author: None,
             language: None,
@@ -270,9 +290,18 @@ impl UserState {
                 }
             }
             Self::AwaitingStatus { .. } => {
-                if lower.contains("backlog") || lower.contains("to-read") || lower.contains("to-watch") || lower.contains("отложен") {
+                if lower.contains("backlog")
+                    || lower.contains("to-read")
+                    || lower.contains("to-watch")
+                    || lower.contains("отложен")
+                {
                     TextTransition::SelectStatus(ContentStatus::Backlog)
-                } else if lower.contains("done") || lower.contains("read") || lower.contains("watched") || lower.contains("прочитан") || lower.contains("посмотрел") {
+                } else if lower.contains("done")
+                    || lower.contains("read")
+                    || lower.contains("watched")
+                    || lower.contains("прочитан")
+                    || lower.contains("посмотрел")
+                {
                     TextTransition::SelectStatus(ContentStatus::Done)
                 } else if lower.contains("dropped") || lower.contains("бросил") {
                     TextTransition::SelectStatus(ContentStatus::Dropped)
@@ -286,7 +315,8 @@ impl UserState {
                         return TextTransition::SetSeason(Some(season));
                     }
                 }
-                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее" {
+                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее"
+                {
                     TextTransition::SetSeason(None)
                 } else {
                     TextTransition::ProcessFresh
@@ -298,21 +328,27 @@ impl UserState {
                         return TextTransition::SetRating(rating);
                     }
                 }
-                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее" {
+                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее"
+                {
                     TextTransition::SetRating(0) // 0 = skipped
                 } else {
                     TextTransition::ProcessFresh
                 }
             }
             Self::AwaitingComment { .. } => {
-                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее" {
+                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее"
+                {
                     TextTransition::SetComment(String::new())
                 } else {
                     TextTransition::SetComment(text.to_string())
                 }
             }
             Self::AwaitingAiConfirm { .. } => {
-                if lower == "confirm" || lower == "✅ confirm" || lower == "да" || lower == "подтвердить" {
+                if lower == "confirm"
+                    || lower == "✅ confirm"
+                    || lower == "да"
+                    || lower == "подтвердить"
+                {
                     TextTransition::ConfirmAi
                 } else if lower.contains("book") || lower.contains("книг") {
                     TextTransition::SelectType(KnowledgeType::Book)
@@ -368,9 +404,10 @@ mod tests {
 
     #[test]
     fn pending_item_should_generate_id() {
-        let item = PendingItem::new("Test Title".to_string(), KnowledgeType::Book);
+        let item = PendingItem::new("Test Title".to_string(), KnowledgeType::Book, 12345);
         assert!(!item.id.is_empty());
         assert_eq!(item.source, "telegram");
         assert_eq!(item.status, ContentStatus::Backlog);
+        assert_eq!(item.chat_id, 12345);
     }
 }

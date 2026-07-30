@@ -16,17 +16,19 @@ impl ParserService {
         let slug = text
             .to_lowercase()
             .chars()
-            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
             .collect::<String>()
             .split('-')
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join("-");
 
+        let slug = if slug.is_empty() { "item" } else { &slug };
+
         if slug.chars().count() > MAX_SLUG_CHARS {
             slug.chars().take(MAX_SLUG_CHARS).collect()
         } else {
-            slug
+            slug.to_string()
         }
     }
 
@@ -67,23 +69,39 @@ mod tests {
 
     #[test]
     fn slugify_should_create_url_slug() {
-        assert_eq!(ParserService::slugify("Lord of the Rings"), "lord-of-the-rings");
-        assert_eq!(ParserService::slugify("The Matrix (1999)"), "the-matrix-1999");
+        assert_eq!(
+            ParserService::slugify("Lord of the Rings"),
+            "lord-of-the-rings"
+        );
+        assert_eq!(
+            ParserService::slugify("The Matrix (1999)"),
+            "the-matrix-1999"
+        );
     }
 
     #[test]
     fn slugify_should_cap_length_for_long_text() {
         let long_text = "a ".repeat(200); // 400 chars of "a a a a ..."
         let slug = ParserService::slugify(&long_text);
-        assert!(slug.chars().count() <= 60, "slug was {} chars", slug.chars().count());
+        assert!(
+            slug.chars().count() <= 60,
+            "slug was {} chars",
+            slug.chars().count()
+        );
     }
 
     #[test]
     fn generate_filename_should_create_flat_yaml() {
-        let item = PendingItem::new("Lord of the Rings".to_string(), KnowledgeType::Book);
+        let item = PendingItem::new("Lord of the Rings".to_string(), KnowledgeType::Book, 0);
         let result = ParserService::generate_filename(&item);
         assert!(result.ends_with(".yaml"));
         assert!(!result.contains('/'));
         assert!(result.contains("lord-of-the-rings"));
+    }
+
+    #[test]
+    fn slugify_should_strip_non_ascii_characters() {
+        let slug = ParserService::slugify("Привет world");
+        assert_eq!(slug, "world");
     }
 }
