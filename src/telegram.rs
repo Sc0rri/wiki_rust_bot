@@ -57,6 +57,10 @@ pub struct Message {
     /// Present on forwarded messages. We don't need to parse its contents —
     /// just knowing a message was forwarded is enough to route it to Note.
     pub forward_origin: Option<serde_json::Value>,
+    /// Present when this message is a reply to another one. We only care
+    /// about its `text` — to look for a "[ref:<id>]" marker we put in our
+    /// own clarifying questions.
+    pub reply_to_message: Option<Box<Message>>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

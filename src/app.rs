@@ -34,6 +34,59 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
 
         let chat_id = msg.chat.id;
 
+        // Log incoming message details for debugging to inbox/logs/<date>.log
+        {
+            let has_text = msg.text.is_some();
+            let has_caption = msg.caption.is_some();
+            let has_photo = msg.photo.is_some();
+            let has_document = msg.document.is_some();
+            let has_reply = msg.reply_to_message.is_some();
+            let has_forward = msg.forward_origin.is_some();
+            let text_preview = msg.text.as_deref().unwrap_or("").chars().take(50).collect::<String>();
+            let log_msg = format!(
+                "chat_id={} from={:?} text_preview=\"{}\" has_text={} has_caption={} has_photo={} has_document={} has_reply={} has_forward={}",
+                chat_id,
+                msg.from.as_ref().map(|u| u.id),
+                text_preview,
+                has_text,
+                has_caption,
+                has_photo,
+                has_document,
+                has_reply,
+                has_forward,
+            );
+            let env_clone = env.clone();
+            ctx.wait_until(async move {
+                GitHubService::append_log(&env_clone, "debug", "telegram.message.incoming", &log_msg).await;
+            });
+        }
+
+        // A reply to one of our own clarifying questions ("[ref:<id>]" in
+        // the text we sent) — handle it before any of the normal capture
+        // flows, since it's not a new item, it's an answer to an old one.
+        if let Some(replied) = msg.reply_to_message.as_ref() {
+            if let Some(replied_text) = replied.text.as_ref() {
+                if let Some(start) = replied_text.find("[ref:") {
+                    if let Some(end) = replied_text[start..].find(']') {
+                        let item_id = &replied_text[start + 5..start + end];
+                        let answer = msg.text.clone().unwrap_or_default();
+                        let item_id = item_id.to_string();
+                        let env_clone = env.clone();
+                        ctx.wait_until(async move {
+                            match GitHubService::save_reply_to_inbox(&env_clone, &item_id, &answer).await {
+                                Ok(_) => {
+                                    let bot_token = get_env_or_secret(&env_clone, "BOT_TOKEN", "");
+                                    let _ = TelegramService::send_message(&bot_token, chat_id, "Спасибо, уточнил(а)! 🙌", None).await;
+                                }
+                                Err(e) => log_event!("error", "clarification.reply.failed", "error={:?}", e),
+                            }
+                        });
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         if let Some(photos) = &msg.photo {
             if let Some(photo) = photos.last().cloned() {
                 let file_id = photo.file_id.clone();
@@ -145,7 +198,7 @@ async fn handle_forwarded(env: Env, chat_id: i64, text: String) -> Result<()> {
     let bot_token = env.secret("BOT_TOKEN")?.to_string();
     let dedup_kv = env.kv("DEDUP_STORE")?;
 
-    let mut item = PendingItem::new(text, KnowledgeType::Note);
+    let mut item = PendingItem::new(text, KnowledgeType::Note, chat_id);
     item.source = "telegram".to_string();
     item.raw_text = Some(item.title.clone());
     item.tags.push("forwarded".to_string());
@@ -185,7 +238,7 @@ async fn handle_media(env: Env, chat_id: i64, media_type: &str, file_id: &str, c
         .map(|c| c.to_string())
         .unwrap_or_else(|| format!("{} note", label));
 
-    let mut item = PendingItem::new(title, KnowledgeType::Note);
+    let mut item = PendingItem::new(title, KnowledgeType::Note, chat_id);
     item.source = "telegram".to_string();
     item.asset_width = meta.width;
     item.asset_height = meta.height;
@@ -301,7 +354,7 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
         TextTransition::Cancel => unreachable!(),
         TextTransition::SelectType(kt) => match state {
             UserState::AwaitingType { raw_text, .. } => {
-                let mut item = PendingItem::new(raw_text, kt.clone());
+                let mut item = PendingItem::new(raw_text, kt.clone(), chat_id);
                 item.source = "telegram".to_string();
                 item.raw_text = Some(item.title.clone());
                 proceed_with_item(env, &bot_token, &kv, &dedup_kv, &state_key, chat_id, kt, item).await?;
@@ -426,6 +479,7 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
         let mut item = PendingItem::new(
             detected.title.clone().unwrap_or_else(|| format!("{} link", detected.provider.label())),
             KnowledgeType::Link,
+            chat_id,
         );
         item.source = "telegram".to_string();
         item.raw_text = Some(text.to_string());
@@ -528,7 +582,7 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
     } else {
         // Plain text: let AI decide if it's a Book/Movie/Series/Anime — anything
         // else (or an AI failure) falls back to a manual pick from those four + Note.
-        match AiService::analyze_content(&env, text).await {
+        match AiService::analyze_content(&env, text, chat_id).await {
             Ok(Some(mut item)) => {
                 item.source = "telegram".to_string();
                 let preview = AiService::format_preview(&item);

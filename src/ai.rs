@@ -26,9 +26,14 @@ impl AiService {
     pub async fn analyze_content(
         env: &Env,
         text: &str,
+        chat_id: i64,
     ) -> Result<Option<PendingItem>> {
         let prompt = format!(
-            "Analyze the following text and determine what type of content it is.\n\nText: \"{}\"",
+            "Analyze the following text and determine what type of content it is.\n\n\
+             Text: \"{}\"\n\n\
+             If you don't confidently recognize the author or year, leave those fields \
+             empty rather than guessing — a wrong guess here will not be caught downstream.\n\
+             Write description and tags in Russian.",
             text
         );
 
@@ -37,7 +42,7 @@ impl AiService {
             None => return Ok(None),
         };
 
-        Ok(Some(Self::build_item(&parsed, text)))
+        Ok(Some(Self::build_item(&parsed, text, chat_id)))
     }
 
     /// For links, the type is already known (it's a Link) — asking AI to
@@ -53,12 +58,13 @@ impl AiService {
     pub async fn enrich_link(env: &Env, title: &str, existing_description: Option<&str>, url: &str) -> Result<Option<LinkAnalysis>> {
         let context = existing_description.unwrap_or("");
         let prompt = format!(
-            "A link was saved with title \"{}\" (url: {}). Existing description: \"{}\".\n\
+             "A link was saved with title \"{}\" (url: {}). Existing description: \"{}\".\n\
              Explain in 1-2 sentences: what this resource is, why it's useful, and who would benefit from it.\n\
              Write a factual summary — avoid promotional or marketing language, and don't just restate the title.\n\
              Then extract 2-5 topic tags. Use canonical technology/concept names \
              (e.g. \"Docker\" not \"docker containers\", \"Rust\" not \"rust-lang\") \
-             so the same technology is never tagged two different ways.",
+             so the same technology is never tagged two different ways.\n\
+             Write the summary in Russian — keep technology/tool names in their canonical English form.",
             title, url, context
         );
 
@@ -104,7 +110,7 @@ impl AiService {
             }
         };
 
-        let model = get_env_or_secret(env, "AI_MODEL", "@cf/meta/llama-3.1-8b-instruct-fp8-fast");
+        let model = get_env_or_secret(env, "AI_MODEL", "@cf/openai/gpt-oss-120b");
 
         let input = serde_json::json!({
             "messages": [{"role": "user", "content": prompt}],
@@ -149,7 +155,7 @@ impl AiService {
         }
     }
 
-    fn build_item(parsed: &serde_json::Value, fallback_title: &str) -> PendingItem {
+    fn build_item(parsed: &serde_json::Value, fallback_title: &str, chat_id: i64) -> PendingItem {
         let knowledge_type = match parsed.get("type").and_then(|v| v.as_str()) {
             Some("book") => KnowledgeType::Book,
             Some("movie") => KnowledgeType::Movie,
@@ -174,7 +180,7 @@ impl AiService {
             .map(|arr| arr.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect())
             .unwrap_or_default();
 
-        let mut item = PendingItem::new(title, knowledge_type);
+        let mut item = PendingItem::new(title, knowledge_type, chat_id);
         item.raw_text = Some(fallback_title.to_string());
         item.author = author;
         item.year = year;
@@ -209,26 +215,29 @@ mod tests {
     #[test]
     fn build_item_should_map_known_type() {
         let parsed = serde_json::json!({"type": "book", "title": "Sapiens", "author": "Harari", "year": 2011});
-        let item = AiService::build_item(&parsed, "fallback");
+        let item = AiService::build_item(&parsed, "fallback", 12345);
         assert_eq!(item.knowledge_type, KnowledgeType::Book);
         assert_eq!(item.title, "Sapiens");
         assert_eq!(item.author.as_deref(), Some("Harari"));
         assert_eq!(item.year, Some(2011));
         assert_eq!(item.raw_text.as_deref(), Some("fallback"));
+        assert_eq!(item.chat_id, 12345);
     }
 
     #[test]
     fn build_item_should_fall_back_to_note_for_unknown_type() {
         let parsed = serde_json::json!({"type": "banana", "title": "Something"});
-        let item = AiService::build_item(&parsed, "fallback");
+        let item = AiService::build_item(&parsed, "fallback", 12345);
         assert_eq!(item.knowledge_type, KnowledgeType::Note);
+        assert_eq!(item.chat_id, 12345);
     }
 
     #[test]
     fn build_item_should_use_fallback_title_when_missing() {
         let parsed = serde_json::json!({"type": "note"});
-        let item = AiService::build_item(&parsed, "original text");
+        let item = AiService::build_item(&parsed, "original text", 12345);
         assert_eq!(item.title, "original text");
+        assert_eq!(item.chat_id, 12345);
     }
 
     #[test]

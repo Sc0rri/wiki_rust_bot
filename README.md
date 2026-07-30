@@ -18,6 +18,10 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 - **🔍 Deduplication**: Prevents duplicate entries via KV store by title; URL keys are recorded for saved links
 - **⌨️ Guided Telegram UI**: Reply keyboards for choices, with free-text input for season, rating, and comments
 - **🕒 Draft timeout**: Draft state expires after 30 minutes; likely expired rating replies are reported instead of being reprocessed as new input
+- **💬 Clarification replies**: When an external script sends a clarifying question with `[ref:<id>]` marker, the user's reply is saved to `inbox/pending/<id>.reply.yaml`
+- **📝 Telegram chat_id**: Each saved item includes the Telegram `chat_id` so external scripts can send follow-up questions back to the right chat
+- **📋 Debug logging**: Incoming Telegram messages are logged to `inbox/logs/<date>.log` for debugging
+- **🔒 YAML safety**: All string fields are properly escaped (backslash, quotes, newlines, tabs) to prevent YAML parsing issues
 
 ## 🏗 Architecture
 
@@ -27,8 +31,10 @@ Telegram → Cloudflare Worker
   ├── Detector (URL → provider)
   ├── Resolver (GitHub API, YouTube oEmbed, generic HTML metadata)
   ├── Cloudflare AI (JSON Schema mode, temperature 0.15) — text classification + link summary/tags
-  └── GitHub API → <repository>/inbox/pending/
-          ├── <repository>/inbox/assets/  (for photos/PDFs)
+  └── GitHub API → <repository>/inbox/
+          ├── pending/        (YAML items + reply files)
+          ├── assets/         (photos/PDFs)
+          ├── logs/           (debug logs, <date>.log)
           └── [Hermes] → LLM wiki
 ```
 
@@ -42,7 +48,7 @@ Telegram → Cloudflare Worker
     ├── lib.rs          # HTTP entry + module declarations
     ├── app.rs          # Webhook handler + state machine
     ├── telegram.rs     # Telegram API types + service
-    ├── github.rs       # GitHub commit to inbox/pending/ + inbox/assets/
+    ├── github.rs       # GitHub commit to inbox/pending/ + inbox/assets/ + inbox/logs/ + reply files
     ├── ai.rs           # Cloudflare Workers AI (JSON Schema mode)
     ├── detector.rs     # URL → provider
     ├── resolver.rs     # Provider/web metadata resolvers
@@ -78,7 +84,7 @@ npx wrangler secret put ALLOWED_USERNAME
 npx wrangler secret put GITHUB_TOKEN
 npx wrangler secret put GITHUB_REPO
 # Optional: npx wrangler secret put AI_MODEL
-# Default: @cf/meta/llama-3.1-8b-instruct-fp8-fast
+# Default: @cf/openai/gpt-oss-120b
 ```
 
 ### 4. Deploy
@@ -218,7 +224,11 @@ tags:
 ---
 ```
 
-Optional fields (`author`, `year`, `language`, `stars`, `rating`, `comment`, `season`, `raw_text`) are omitted when empty. `tags` is written as an empty list when there are no tags. Link summaries/descriptions are shown in chat previews but are not currently written to YAML.
+Each item includes a `chat_id` field (the Telegram chat ID it was submitted from), so external scripts can send follow-up questions back to the right chat.
+
+Optional fields (`author`, `year`, `language`, `stars`, `rating`, `comment`, `season`, `raw_text`, `chat_id`) are omitted when empty. `tags` is written as an empty list when there are no tags. Link summaries/descriptions are shown in chat previews but are not currently written to YAML.
+
+> **YAML safety**: All string fields (`title`, `raw_text`, `author`, `comment`, `url`, `tags`) are escaped via `yaml_quote()` — backslashes, double quotes, carriage returns, newlines, and tabs are encoded as `\\`, `\"`, `\r`, `\n`, `\t` respectively. This ensures multi-line text (e.g. forwarded reviews) is stored as a single-line YAML value without breaking the frontmatter.
 
 For media items (photos/PDFs), additional metadata is saved when available:
 - `asset_sha256` — SHA-256 hash of the archived file
@@ -280,10 +290,26 @@ Metadata (SHA-256, MIME type, dimensions) is saved alongside the item when avail
 ### Forwarded messages  
 Automatically saved as `Note` with a `forwarded` tag — no prompts.
 
+## 📋 Debug Logging
+
+Every incoming Telegram message is logged to `inbox/logs/<date>.log` in the GitHub repository:
+
+```
+2026-07-30T11:54:44.123Z [debug] telegram.message.incoming - chat_id=123 from=Some(456) text_preview="..." has_text=true has_caption=false has_photo=false has_document=false has_reply=false has_forward=false
+```
+
+The log entry includes:
+- `chat_id` — the chat the message came from
+- `from` — the sender's Telegram user ID
+- `text_preview` — first 50 characters of the message text
+- Boolean flags for: `has_text`, `has_caption`, `has_photo`, `has_document`, `has_reply`, `has_forward`
+
+Logs are best-effort: if a concurrent write races, one entry may be lost. This is acceptable for debug logs.
+
 ### AI Analysis Details
 
 - **JSON Schema mode**: Workers AI `response_format` with `json_schema` requests structured output; the bot also has a defensive JSON extraction fallback for models that return text
-- **Model**: `@cf/meta/llama-3.1-8b-instruct-fp8-fast` by default (configurable via `AI_MODEL`)
+- **Model**: `@cf/openai/gpt-oss-120b` by default (configurable via `AI_MODEL`)
 - **Temperature**: 0.15 (low — deterministic classification, not creative generation)
 - **Classifies into**: `type` (enum: book/movie/series/anime/note), `title` (required), `author`, `year`, `description`, `tags`
 - **Human-in-the-loop**: AI result is shown as a suggestion — user confirms or changes type before proceeding
