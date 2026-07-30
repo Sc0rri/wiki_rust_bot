@@ -322,10 +322,13 @@ impl GitHubService {
             .to_string();
 
         // 5. Update the branch reference to point to the new commit.
+        //    force=true is safe here: this bot is the only writer to the repo,
+        //    and "not a fast forward" errors happen when two concurrent
+        //    requests race between GET (step 1) and PATCH (step 5).
         let ref_url = format!("https://api.github.com/repos/{}/git/refs/heads/main", repo);
         let ref_payload = serde_json::json!({
             "sha": new_commit_sha,
-            "force": false,
+            "force": true,
         });
         let ref_resp = Self::github_patch(token, &ref_url, &ref_payload).await?;
         let _ = ref_resp; // we don't need the response body

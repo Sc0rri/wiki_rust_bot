@@ -630,7 +630,13 @@ async fn save_and_finish(env: Env, bot_token: &str, dedup_kv: &worker::kv::KvSto
             }
             TelegramService::send_message(bot_token, chat_id, &format!("✅ Saved:\n{}", path), Some(TelegramService::remove_keyboard())).await?;
         }
-        Err(e) => TelegramService::send_message(bot_token, chat_id, &format!("❌ Error: {}", e), Some(TelegramService::remove_keyboard())).await?,
+        Err(e) => {
+            // Write the error directly via append_log (Contents API) so it's
+            // visible in the log file even if the Git Data API commit failed.
+            let error_msg = format!("save_to_inbox failed: {:?}", e);
+            GitHubService::append_log(&env, "error", "save_and_finish.failed", &error_msg).await;
+            TelegramService::send_message(bot_token, chat_id, &format!("❌ Error: {}", e), Some(TelegramService::remove_keyboard())).await?;
+        }
     }
     Ok(())
 }
