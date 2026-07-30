@@ -129,7 +129,7 @@ impl AiService {
         let model = get_env_or_secret(env, "AI_MODEL", "@cf/openai/gpt-oss-120b");
 
         let input = serde_json::json!({
-            "prompt": prompt,
+            "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.15,
             "response_format": {
                 "type": "json_schema",
