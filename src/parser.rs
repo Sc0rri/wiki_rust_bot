@@ -16,17 +16,19 @@ impl ParserService {
         let slug = text
             .to_lowercase()
             .chars()
-            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
             .collect::<String>()
             .split('-')
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join("-");
 
+        let slug = if slug.is_empty() { "item" } else { &slug };
+
         if slug.chars().count() > MAX_SLUG_CHARS {
             slug.chars().take(MAX_SLUG_CHARS).collect()
         } else {
-            slug
+            slug.to_string()
         }
     }
 
@@ -95,5 +97,11 @@ mod tests {
         assert!(result.ends_with(".yaml"));
         assert!(!result.contains('/'));
         assert!(result.contains("lord-of-the-rings"));
+    }
+
+    #[test]
+    fn slugify_should_strip_non_ascii_characters() {
+        let slug = ParserService::slugify("Привет world");
+        assert_eq!(slug, "world");
     }
 }

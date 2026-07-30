@@ -75,26 +75,15 @@ impl GitHubService {
         let log_path = format!("inbox/logs/{}.log", date);
         let log_content = Self::build_daily_log_content(&token, &repo, &date, log_lines).await?;
 
-        // Use Git Data API to commit both files atomically.
-        let commit_sha = Self::commit_files(
-            &token,
-            &repo,
-            &format!(
-                "Add {}: {}",
-                item.knowledge_type.label().to_lowercase(),
-                item.title
-            ),
-            &[(&pending_path, &pending_content), (&log_path, &log_content)],
-        )
-        .await?;
+        Self::put_text_file(&token, &repo, &pending_path, &pending_content).await?;
+        Self::put_text_file(&token, &repo, &log_path, &log_content).await?;
 
         crate::log_event!(
             "info",
             "github.commit.success",
-            "pending={} log={} commit={}",
+            "pending={} log={} commit=contents-api",
             pending_path,
-            log_path,
-            commit_sha
+            log_path
         );
 
         Ok(pending_path)
@@ -137,6 +126,17 @@ impl GitHubService {
                 crate::logger::restore_logs(log_lines);
                 // Fallback to Contents API if Git Data API fails.
                 crate::log_event!("warn", "github.flush_logs.fallback", "error={:?}", e);
+                if let Err(write_err) =
+                    Self::put_text_file(&token, &repo, &log_path, &log_content).await
+                {
+                    crate::log_event!(
+                        "warn",
+                        "github.flush_logs.contents_failed",
+                        "error={:?}",
+                        write_err
+                    );
+                    return;
+                }
                 for line in log_lines {
                     // Extract level, name, message from the formatted line.
                     // Format: "2026-07-30T10:10:10.843Z [error] name - msg"
@@ -386,6 +386,48 @@ impl GitHubService {
     }
 
     // ── Contents API helpers ──────────────────────────────────────────────
+
+    async fn put_text_file(token: &str, repo: &str, path: &str, content: &str) -> Result<()> {
+        let content_base64 = STANDARD.encode(content);
+        let sha = Self::get_file_sha(token, repo, path).await.ok();
+        let url = format!("https://api.github.com/repos/{}/contents/{}", repo, path);
+
+        let mut payload = serde_json::json!({
+            "message": format!("Write {}", path),
+            "content": content_base64,
+            "branch": "main"
+        });
+        if let Some(sha) = sha {
+            payload
+                .as_object_mut()
+                .unwrap()
+                .insert("sha".to_string(), serde_json::Value::String(sha));
+        }
+
+        let headers = Headers::new();
+        headers.set("Authorization", &format!("Bearer {}", token))?;
+        headers.set("Content-Type", "application/json")?;
+        headers.set("User-Agent", "wiki-rust-bot")?;
+
+        let mut req_init = RequestInit::new();
+        req_init.with_method(Method::Put);
+        req_init.with_headers(headers);
+        req_init.with_body(Some(serde_json::to_string(&payload)?.into()));
+
+        let req = Request::new_with_init(&url, &req_init)?;
+        let mut resp = Fetch::Request(req).send().await?;
+
+        if resp.status_code() != 201 && resp.status_code() != 200 {
+            let err_text = resp.text().await?;
+            return Err(worker::Error::from(format!(
+                "GitHub Contents API error ({}): {}",
+                resp.status_code(),
+                err_text
+            )));
+        }
+
+        Ok(())
+    }
 
     /// PUTs a file to the GitHub Contents API. If `sha` is Some, updates an
     /// existing file; if None, creates a new file.
