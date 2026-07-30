@@ -48,6 +48,7 @@ pub fn restore_logs(lines: &[String]) {
 }
 
 /// Backward-compatible alias used by older callers.
+#[allow(dead_code)]
 pub fn flush_logs() -> Vec<String> {
     take_logs()
 }

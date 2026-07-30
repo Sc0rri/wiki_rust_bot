@@ -11,14 +11,73 @@ use worker::*;
 
 const STATE_TTL_SECONDS: u64 = 1800; // 30 minutes
 
-#[derive(Debug, Clone, Copy)]
-enum LogFlushMode {
-    FlushNow,
-    DeferUntilItemSave,
+/// Persists the current thread-local log buffer to KV for the given chat_id.
+/// The buffer is drained and appended to the KV entry `{chat_id}_logbuf`
+/// (JSON-serialized Vec<String>) with the same 30-minute TTL as dialog state.
+/// This lets logs survive between requests/isolates without an immediate GitHub commit.
+async fn persist_logs_to_kv(env: &Env, chat_id: i64) {
+    let lines = crate::logger::take_logs();
+    if lines.is_empty() {
+        return;
+    }
+    let kv = match env.kv("STATE_STORE") {
+        Ok(kv) => kv,
+        Err(_) => return,
+    };
+    let key = format!("{}_logbuf", chat_id);
+    let existing = kv
+        .get(&key)
+        .text()
+        .await
+        .unwrap_or_default()
+        .unwrap_or_default();
+    let mut all_lines: Vec<String> = if existing.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&existing).unwrap_or_default()
+    };
+    all_lines.extend(lines);
+    if let Ok(json) = serde_json::to_string(&all_lines) {
+        if let Ok(put) = kv.put(&key, &json) {
+            let _ = put.expiration_ttl(STATE_TTL_SECONDS).execute().await;
+        }
+    }
 }
 
-fn should_flush_logs_immediately(mode: LogFlushMode) -> bool {
-    matches!(mode, LogFlushMode::FlushNow)
+/// Retrieves and deletes the KV-persisted log buffer for the given chat_id,
+/// then merges it with the current thread-local buffer. Returns the combined
+/// lines. Used by `save_to_inbox` and `/cancel`/`/clear` to ensure no logs
+/// are lost.
+async fn collect_logs_for_chat(env: &Env, chat_id: i64) -> Vec<String> {
+    let mut lines = crate::logger::take_logs();
+    let kv = match env.kv("STATE_STORE") {
+        Ok(kv) => kv,
+        Err(_) => return lines,
+    };
+    let key = format!("{}_logbuf", chat_id);
+    if let Ok(Some(existing)) = kv.get(&key).text().await {
+        if !existing.is_empty() {
+            if let Ok(mut kv_lines) = serde_json::from_str::<Vec<String>>(&existing) {
+                lines.append(&mut kv_lines);
+            }
+        }
+        let _ = kv.delete(&key).await;
+    }
+    lines
+}
+
+/// Flushes all logs (current buffer + KV-persisted) to GitHub for the given
+/// chat_id, via `flush_logs_only` in a background task. Called explicitly by
+/// `/cancel` and `/clear` commands.
+async fn flush_logs_for_chat(env: &Env, ctx: &Context, chat_id: i64) {
+    let all_lines = collect_logs_for_chat(env, chat_id).await;
+    if all_lines.is_empty() {
+        return;
+    }
+    let env_clone = env.clone();
+    ctx.wait_until(async move {
+        GitHubService::flush_logs_only(&env_clone, &all_lines).await;
+    });
 }
 
 pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result<()> {
@@ -26,7 +85,8 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
         Ok(update) => update,
         Err(err) => {
             log_event!("warn", "telegram.update.invalid_json", "error={}", err);
-            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
+            // No chat_id available — flush to GitHub immediately.
+            flush_remaining_logs_if_needed(&env, &ctx).await;
             return Ok(());
         }
     };
@@ -34,7 +94,8 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
     let allowed_username = get_env_or_secret(&env, "ALLOWED_USERNAME", "");
     if allowed_username.is_empty() {
         log_event!("error", "config.allowed_username_missing");
-        flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
+        // No chat_id available — flush to GitHub immediately.
+        flush_remaining_logs_if_needed(&env, &ctx).await;
         return Ok(());
     }
 
@@ -46,15 +107,14 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
     if let Some(msg) = update.message {
         let sender = msg.from.as_ref();
         if !username_is_allowed(sender.and_then(|u| u.username.as_ref()), &allowed_username) {
-            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
+            persist_logs_to_kv(&env, msg.chat.id).await;
             return Ok(());
         }
 
         let chat_id = msg.chat.id;
 
         // Log incoming message details — goes into the buffer and will be
-        // flushed to inbox/logs/<date>.log atomically with the next pending
-        // item commit, or at the end of handle_update via flush_logs_only.
+        // persisted to KV until the next save or /cancel /clear.
         {
             let has_text = msg.text.is_some();
             let has_caption = msg.caption.is_some();
@@ -113,7 +173,7 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                                 log_event!("error", "clarification.reply.failed", "error={:?}", e)
                             }
                         }
-                        flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
+                        persist_logs_to_kv(&env, chat_id).await;
                         return Ok(());
                     }
                 }
@@ -157,7 +217,7 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                 {
                     log_event!("error", "telegram.photo.failed", "error={:?}", e);
                 }
-                flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
+                persist_logs_to_kv(&env, chat_id).await;
                 return Ok(());
             }
         }
@@ -196,12 +256,12 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                     log_event!("error", "telegram.pdf.failed", "error={:?}", e);
                 }
             }
-            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
+            persist_logs_to_kv(&env, chat_id).await;
         }
 
         let text = msg.text.clone().unwrap_or_default().trim().to_string();
         if text.is_empty() {
-            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
+            persist_logs_to_kv(&env, chat_id).await;
             return Ok(());
         }
 
@@ -218,16 +278,18 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
             if let Err(e) = handle_forwarded(env_clone, chat_id, text_clone).await {
                 log_event!("error", "telegram.forwarded.failed", "error={:?}", e);
             }
-            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
+            persist_logs_to_kv(&env, chat_id).await;
             return Ok(());
         }
 
         if text.starts_with('/') {
             let env_clone = env.clone();
-            if let Err(e) = handle_command(env_clone, chat_id, &text).await {
+            if let Err(e) = handle_command(env_clone, &ctx, chat_id, &text).await {
                 log_event!("error", "telegram.command.failed", "error={:?}", e);
             }
-            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
+            // Command path: /cancel and /clear flush logs to GitHub inside handle_command.
+            // All other commands persist to KV.
+            persist_logs_to_kv(&env, chat_id).await;
             return Ok(());
         }
 
@@ -242,23 +304,19 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
         if let Err(e) = handle_text(env_clone, chat_id, text).await {
             log_event!("error", "telegram.text.failed", "error={:?}", e);
         }
-    }
 
-    // Flush remaining buffered logs (from the text processing path).
-    flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
+        // Persist remaining logs (from text processing) to KV so they survive
+        // between requests. They'll be committed on next save or /cancel /clear.
+        persist_logs_to_kv(&env, chat_id).await;
+    }
 
     Ok(())
 }
 
 /// Flushes any buffered log lines to inbox/logs/<date>.log via a background
-/// task. Called before every early return in handle_update so that logs from
-/// commands, media, forwarded messages, etc. are persisted even when no
-/// pending item is being saved.
-async fn flush_remaining_logs_if_needed(env: &Env, ctx: &Context, mode: LogFlushMode) {
-    if !should_flush_logs_immediately(mode) {
-        return;
-    }
-
+/// task. Only used for early returns where chat_id is unknown (invalid JSON,
+/// missing config). All other paths use `persist_logs_to_kv` instead.
+async fn flush_remaining_logs_if_needed(env: &Env, ctx: &Context) {
     let env_clone = env.clone();
     let remaining = crate::logger::take_logs();
     if !remaining.is_empty() {
@@ -272,7 +330,7 @@ fn username_is_allowed(username: Option<&String>, allowed: &str) -> bool {
     username.map(|u| u.as_str()).unwrap_or_default() == allowed
 }
 
-async fn handle_command(env: Env, chat_id: i64, text: &str) -> Result<()> {
+async fn handle_command(env: Env, ctx: &Context, chat_id: i64, text: &str) -> Result<()> {
     let bot_token = env.secret("BOT_TOKEN")?.to_string();
     let command = text.split_whitespace().next().unwrap_or("").to_lowercase();
 
@@ -284,15 +342,21 @@ async fn handle_command(env: Env, chat_id: i64, text: &str) -> Result<()> {
         "/cancel" => {
             let kv = env.kv("STATE_STORE")?;
             delete_state(&kv, &format!("{}_state", chat_id), chat_id).await?;
+            // Flush accumulated logs to GitHub before clearing state.
+            flush_logs_for_chat(&env, ctx, chat_id).await;
             "❌ Cancelled.".to_string()
         }
         "/clear" => {
             let dedup_kv = env.kv("DEDUP_STORE")?;
             match DedupService::clear_all(&dedup_kv).await {
-                Ok(count) => format!(
-                    "🧹 Cleared {} dedup entries. Everything will be treated as new again.",
-                    count
-                ),
+                Ok(count) => {
+                    // Flush accumulated logs to GitHub before clearing state.
+                    flush_logs_for_chat(&env, ctx, chat_id).await;
+                    format!(
+                        "🧹 Cleared {} dedup entries. Everything will be treated as new again.",
+                        count
+                    )
+                }
                 Err(e) => {
                     log_event!("error", "dedup.clear.failed", "error={:?}", e);
                     format!("❌ Couldn't clear dedup store: {}", e)
@@ -847,7 +911,8 @@ async fn save_and_finish(
     )
     .await?;
 
-    let log_lines = crate::logger::take_logs();
+    // Collect both current buffer and any KV-persisted logs from previous requests.
+    let log_lines = collect_logs_for_chat(&env, chat_id).await;
     match GitHubService::save_to_inbox(&env, &item, &log_lines).await {
         Ok(path) => {
             // Dedup marks are bookkeeping only — if writing them fails, the
@@ -967,14 +1032,6 @@ fn state_name(state: &UserState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn media_messages_should_defer_log_flush_until_item_save() {
-        assert!(!should_flush_logs_immediately(
-            LogFlushMode::DeferUntilItemSave
-        ));
-        assert!(should_flush_logs_immediately(LogFlushMode::FlushNow));
-    }
 
     #[test]
     fn state_name_should_return_correct_names() {

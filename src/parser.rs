@@ -11,6 +11,7 @@ impl ParserService {
     /// because titles can be an entire forwarded paragraph (e.g. a long
     /// Note) — an unbounded slug turns into a GitHub API request URL long
     /// enough that GitHub rejects it outright ("Request-URL too long").
+    #[allow(dead_code)]
     pub fn slugify(text: &str) -> String {
         const MAX_SLUG_CHARS: usize = 60;
         let slug = text

@@ -367,7 +367,7 @@ impl GitHubService {
             }
 
             if let Ok(req) = Request::new_with_init(&url, &put_req_init) {
-                if let Ok(mut resp) = Fetch::Request(req).send().await {
+                if let Ok(resp) = Fetch::Request(req).send().await {
                     if resp.status_code() == 201 || resp.status_code() == 200 {
                         return; // Success
                     }
