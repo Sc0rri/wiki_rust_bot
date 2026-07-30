@@ -28,6 +28,11 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
         return Ok(());
     }
 
+    // Whether to write logs to inbox/logs/ in the GitHub repo.
+    // Default: true. Set LOG_TO_FILE=false in env to disable.
+    let log_to_file = get_env_or_secret(&env, "LOG_TO_FILE", "true") == "true";
+    crate::logger::set_log_enabled(log_to_file);
+
     if let Some(msg) = update.message {
         let sender = msg.from.as_ref();
         if !username_is_allowed(sender.and_then(|u| u.username.as_ref()), &allowed_username) {
