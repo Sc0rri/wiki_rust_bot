@@ -119,7 +119,16 @@ impl PendingItem {
         let title = strip_invisible_chars(&title);
         let now = chrono::Utc::now();
         Self {
-            id: format!("{}-{}", now.format("%Y%m%d%H%M%S"), title.chars().take(20).collect::<String>().to_lowercase().replace(' ', "-")),
+            id: format!(
+                "{}-{}",
+                now.format("%Y%m%d%H%M%S"),
+                title
+                    .chars()
+                    .take(20)
+                    .collect::<String>()
+                    .to_lowercase()
+                    .replace(' ', "-")
+            ),
             created: now.format("%Y-%m-%d").to_string(),
             source: "telegram".to_string(),
             provider: ResourceProvider::Direct,
@@ -281,9 +290,18 @@ impl UserState {
                 }
             }
             Self::AwaitingStatus { .. } => {
-                if lower.contains("backlog") || lower.contains("to-read") || lower.contains("to-watch") || lower.contains("отложен") {
+                if lower.contains("backlog")
+                    || lower.contains("to-read")
+                    || lower.contains("to-watch")
+                    || lower.contains("отложен")
+                {
                     TextTransition::SelectStatus(ContentStatus::Backlog)
-                } else if lower.contains("done") || lower.contains("read") || lower.contains("watched") || lower.contains("прочитан") || lower.contains("посмотрел") {
+                } else if lower.contains("done")
+                    || lower.contains("read")
+                    || lower.contains("watched")
+                    || lower.contains("прочитан")
+                    || lower.contains("посмотрел")
+                {
                     TextTransition::SelectStatus(ContentStatus::Done)
                 } else if lower.contains("dropped") || lower.contains("бросил") {
                     TextTransition::SelectStatus(ContentStatus::Dropped)
@@ -297,7 +315,8 @@ impl UserState {
                         return TextTransition::SetSeason(Some(season));
                     }
                 }
-                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее" {
+                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее"
+                {
                     TextTransition::SetSeason(None)
                 } else {
                     TextTransition::ProcessFresh
@@ -309,21 +328,27 @@ impl UserState {
                         return TextTransition::SetRating(rating);
                     }
                 }
-                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее" {
+                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее"
+                {
                     TextTransition::SetRating(0) // 0 = skipped
                 } else {
                     TextTransition::ProcessFresh
                 }
             }
             Self::AwaitingComment { .. } => {
-                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее" {
+                if lower.contains("skip") || lower.contains("пропустить") || lower == "далее"
+                {
                     TextTransition::SetComment(String::new())
                 } else {
                     TextTransition::SetComment(text.to_string())
                 }
             }
             Self::AwaitingAiConfirm { .. } => {
-                if lower == "confirm" || lower == "✅ confirm" || lower == "да" || lower == "подтвердить" {
+                if lower == "confirm"
+                    || lower == "✅ confirm"
+                    || lower == "да"
+                    || lower == "подтвердить"
+                {
                     TextTransition::ConfirmAi
                 } else if lower.contains("book") || lower.contains("книг") {
                     TextTransition::SelectType(KnowledgeType::Book)

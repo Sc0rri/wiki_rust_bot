@@ -36,6 +36,47 @@ pub fn flush_logs() -> Vec<String> {
     result
 }
 
+pub fn format_log_line(
+    level: impl AsRef<str>,
+    name: impl AsRef<str>,
+    message: impl AsRef<str>,
+) -> String {
+    let timestamp = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+    let level = level.as_ref();
+    let name = name.as_ref();
+    let message = message.as_ref();
+    let base = format!("{} [{}] {} - {}", timestamp, level, name, message);
+
+    if level.eq_ignore_ascii_case("error")
+        && (name.starts_with("github.") || name.starts_with("telegram."))
+    {
+        let header = format!("=== {} {} ===", level.to_uppercase(), name);
+        let separator = "=".repeat(header.len());
+        format!("{}\n{}\n{}", header, base, separator)
+    } else {
+        base
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_log_line;
+
+    #[test]
+    fn format_log_line_should_wrap_github_and_telegram_errors_in_blocks() {
+        let line = format_log_line(
+            "error",
+            "github.api.post_failed",
+            "status=500 body=bad gateway",
+        );
+        assert!(line.contains("=== ERROR github.api.post_failed ==="));
+        assert!(line.contains("github.api.post_failed"));
+        assert!(line.contains("status=500 body=bad gateway"));
+    }
+}
+
 #[macro_export]
 macro_rules! log_event {
     ($level:expr, $name:expr) => {
@@ -44,8 +85,7 @@ macro_rules! log_event {
     ($level:expr, $name:expr, $($arg:tt)*) => {
         {
             let message = format!($($arg)*);
-            let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-            let line = format!("{} [{}] {} - {}", timestamp, $level, $name, message);
+            let line = $crate::logger::format_log_line($level, $name, &message);
             // Always print to the Worker console for immediate visibility.
             ::worker::console_log!("{}", line);
             // Buffer for GitHub log file only if file logging is enabled.

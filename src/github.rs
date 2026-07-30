@@ -1,7 +1,7 @@
-use crate::state::PendingItem;
-use crate::parser::ParserService;
 use crate::get_env_or_secret;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use crate::parser::ParserService;
+use crate::state::PendingItem;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use worker::*;
 
 pub struct GitHubService;
@@ -30,21 +30,32 @@ impl GitHubService {
                 let err_str = e.to_string();
                 // 409 = file already exists → fetch its SHA and update.
                 if err_str.contains("409") || err_str.contains("is at") {
-                    crate::log_event!("warn", "github.asset.conflict", "path={} retrying with sha", path);
+                    crate::log_event!(
+                        "warn",
+                        "github.asset.conflict",
+                        "path={} retrying with sha",
+                        path
+                    );
                     let sha = Self::get_file_sha(&token, &repo, &path).await?;
                     Self::put_contents(&token, &repo, &path, &content_base64, Some(&sha)).await?;
                     crate::log_event!("info", "github.asset.updated", "path={}", path);
                     Ok(path)
                 } else {
-                    crate::log_event!("error", "github.asset.failed", "status=409 body={}", err_str);
+                    crate::log_event!(
+                        "error",
+                        "github.asset.failed",
+                        "status=409 body={}",
+                        err_str
+                    );
                     Err(e)
                 }
             }
         }
     }
 
-    /// Saves a pending item to inbox/pending/ and atomically writes all
-    /// buffered log lines to inbox/logs/<same-slug>.log in a single commit.
+    /// Saves a pending item to inbox/pending/ and appends the buffered log
+    /// lines into the shared daily log file inbox/logs/<date>.log in a single
+    /// commit.
     ///
     /// Uses the Git Data API (create tree → create commit → update ref)
     /// instead of the Contents API, so both files land in one commit.
@@ -60,22 +71,22 @@ impl GitHubService {
         let pending_path = format!("inbox/pending/{}", filename);
         let pending_content = Self::generate_yaml(item);
 
-        // Per-item log file: same slug as the pending YAML, but .log extension
-        // and in inbox/logs/ instead of inbox/pending/.
-        let log_filename = filename.replace(".yaml", ".log");
-        let log_path = format!("inbox/logs/{}", log_filename);
-        let log_content = log_lines.join("\n") + "\n";
+        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let log_path = format!("inbox/logs/{}.log", date);
+        let log_content = Self::build_daily_log_content(&token, &repo, &date, log_lines).await?;
 
         // Use Git Data API to commit both files atomically.
         let commit_sha = Self::commit_files(
             &token,
             &repo,
-            &format!("Add {}: {}", item.knowledge_type.label().to_lowercase(), item.title),
-            &[
-                (&pending_path, &pending_content),
-                (&log_path, &log_content),
-            ],
-        ).await?;
+            &format!(
+                "Add {}: {}",
+                item.knowledge_type.label().to_lowercase(),
+                item.title
+            ),
+            &[(&pending_path, &pending_content), (&log_path, &log_content)],
+        )
+        .await?;
 
         crate::log_event!(
             "info",
@@ -104,14 +115,23 @@ impl GitHubService {
 
         let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let log_path = format!("inbox/logs/{}.log", date);
-        let log_content = log_lines.join("\n") + "\n";
+        let log_content = match Self::build_daily_log_content(&token, &repo, &date, log_lines).await
+        {
+            Ok(content) => content,
+            Err(e) => {
+                crate::log_event!("warn", "github.flush_logs.build_failed", "error={:?}", e);
+                return;
+            }
+        };
 
         match Self::commit_files(
             &token,
             &repo,
             &format!("Logs: {} entries [{}]", log_lines.len(), date),
             &[(&log_path, &log_content)],
-        ).await {
+        )
+        .await
+        {
             Ok(_sha) => {}
             Err(e) => {
                 // Fallback to Contents API if Git Data API fails.
@@ -119,8 +139,16 @@ impl GitHubService {
                 for line in log_lines {
                     // Extract level, name, message from the formatted line.
                     // Format: "2026-07-30T10:10:10.843Z [error] name - msg"
-                    let level = line.split('[').nth(1).and_then(|s| s.split(']').next()).unwrap_or("info");
-                    let name = line.split("] ").nth(1).and_then(|s| s.split(" - ").next()).unwrap_or("unknown");
+                    let level = line
+                        .split('[')
+                        .nth(1)
+                        .and_then(|s| s.split(']').next())
+                        .unwrap_or("info");
+                    let name = line
+                        .split("] ")
+                        .nth(1)
+                        .and_then(|s| s.split(" - ").next())
+                        .unwrap_or("unknown");
                     let msg = line.split(" - ").nth(1).unwrap_or(line);
                     Self::append_log(env, level, name, msg).await;
                 }
@@ -181,14 +209,87 @@ impl GitHubService {
             )));
         }
 
-        crate::log_event!(
-            "info",
-            "github.reply.success",
-            "path={}",
-            path
-        );
+        crate::log_event!("info", "github.reply.success", "path={}", path);
 
         Ok(path)
+    }
+
+    async fn build_daily_log_content(
+        token: &str,
+        repo: &str,
+        date: &str,
+        new_lines: &[String],
+    ) -> Result<String> {
+        let existing = Self::read_log_file(token, repo, date)
+            .await
+            .unwrap_or_default();
+        Ok(Self::merge_log_content(&existing, new_lines))
+    }
+
+    fn merge_log_content(existing: &str, new_lines: &[String]) -> String {
+        let mut merged = Vec::new();
+
+        if !existing.trim().is_empty() {
+            merged.extend(
+                existing
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .map(|line| line.to_string()),
+            );
+        }
+
+        merged.extend(new_lines.iter().cloned());
+
+        if merged.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", merged.join("\n"))
+        }
+    }
+
+    async fn read_log_file(token: &str, repo: &str, date: &str) -> Result<String> {
+        let path = format!("inbox/logs/{}.log", date);
+        let url = format!("https://api.github.com/repos/{}/contents/{}", repo, path);
+
+        let headers = Headers::new();
+        headers.set("Authorization", &format!("Bearer {}", token))?;
+        headers.set("User-Agent", "wiki-rust-bot")?;
+        headers.set("Accept", "application/vnd.github+json")?;
+
+        let mut req_init = RequestInit::new();
+        req_init.with_method(Method::Get);
+        req_init.with_headers(headers);
+
+        let req = Request::new_with_init(&url, &req_init)?;
+        let mut resp = Fetch::Request(req).send().await?;
+
+        if resp.status_code() == 404 {
+            return Ok(String::new());
+        }
+        if resp.status_code() != 200 {
+            let body = resp.text().await?;
+            return Err(worker::Error::from(format!(
+                "GitHub GET {} failed: {}",
+                path, body
+            )));
+        }
+
+        let val: serde_json::Value = resp.json().await?;
+        let content = val
+            .get("content")
+            .and_then(|c| c.as_str())
+            .map(|c| c.replace('\n', ""))
+            .unwrap_or_default();
+
+        if content.is_empty() {
+            return Ok(String::new());
+        }
+
+        let decoded = STANDARD
+            .decode(content)
+            .map_err(|e| worker::Error::from(format!("Base64 decode failed: {}", e)))?;
+        String::from_utf8(decoded)
+            .map_err(|e| worker::Error::from(format!("UTF-8 decode failed: {}", e)))
     }
 
     /// Appends a log line to inbox/logs/<date>.log in the GitHub repo.
@@ -207,8 +308,7 @@ impl GitHubService {
         let path = format!("inbox/logs/{}.log", date);
         let url = format!("https://api.github.com/repos/{}/contents/{}", repo, path);
 
-        let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-        let new_line = format!("{} [{}] {} - {}\n", timestamp, level, name, message);
+        let new_line = format!("{}\n", crate::logger::format_log_line(level, name, message));
 
         // Try to GET existing file content (SHA + base64 body).
         let get_headers = Headers::new();
@@ -219,21 +319,29 @@ impl GitHubService {
         get_req_init.with_method(Method::Get);
         get_req_init.with_headers(get_headers);
 
-        let (existing_sha, existing_body) = if let Ok(req) = Request::new_with_init(&url, &get_req_init) {
-            if let Ok(mut resp) = Fetch::Request(req).send().await {
-                if resp.status_code() == 200 {
-                    if let Ok(val) = resp.json::<serde_json::Value>().await {
-                        let sha = val.get("sha").and_then(|s| s.as_str()).map(|s| s.to_string());
-                        let content = val.get("content")
-                            .and_then(|c| c.as_str())
-                            .map(|c| c.replace('\n', "").replace('\r', ""))
-                            .and_then(|c| {
-                                use base64::Engine;
-                                base64::engine::general_purpose::STANDARD.decode(c).ok()
-                            })
-                            .and_then(|bytes| String::from_utf8(bytes).ok())
-                            .unwrap_or_default();
-                        (sha, content)
+        let (existing_sha, existing_body) =
+            if let Ok(req) = Request::new_with_init(&url, &get_req_init) {
+                if let Ok(mut resp) = Fetch::Request(req).send().await {
+                    if resp.status_code() == 200 {
+                        if let Ok(val) = resp.json::<serde_json::Value>().await {
+                            let sha = val
+                                .get("sha")
+                                .and_then(|s| s.as_str())
+                                .map(|s| s.to_string());
+                            let content = val
+                                .get("content")
+                                .and_then(|c| c.as_str())
+                                .map(|c| c.replace('\n', "").replace('\r', ""))
+                                .and_then(|c| {
+                                    use base64::Engine;
+                                    base64::engine::general_purpose::STANDARD.decode(c).ok()
+                                })
+                                .and_then(|bytes| String::from_utf8(bytes).ok())
+                                .unwrap_or_default();
+                            (sha, content)
+                        } else {
+                            (None, String::new())
+                        }
                     } else {
                         (None, String::new())
                     }
@@ -242,12 +350,9 @@ impl GitHubService {
                 }
             } else {
                 (None, String::new())
-            }
-        } else {
-            (None, String::new())
-        };
+            };
 
-        let new_content = format!("{}{}", existing_body, new_line);
+        let new_content = format!("{}{}\n", existing_body, new_line);
         let content_base64 = base64::engine::general_purpose::STANDARD.encode(&new_content);
 
         let mut payload = serde_json::json!({
@@ -256,7 +361,10 @@ impl GitHubService {
             "branch": "main"
         });
         if let Some(sha) = existing_sha {
-            payload.as_object_mut().unwrap().insert("sha".to_string(), serde_json::Value::String(sha));
+            payload
+                .as_object_mut()
+                .unwrap()
+                .insert("sha".to_string(), serde_json::Value::String(sha));
         }
 
         let put_headers = Headers::new();
@@ -295,7 +403,10 @@ impl GitHubService {
             "branch": "main"
         });
         if let Some(s) = sha {
-            payload.as_object_mut().unwrap().insert("sha".to_string(), serde_json::Value::String(s.to_string()));
+            payload
+                .as_object_mut()
+                .unwrap()
+                .insert("sha".to_string(), serde_json::Value::String(s.to_string()));
         }
 
         let headers = Headers::new();
@@ -373,7 +484,10 @@ impl GitHubService {
             .ok_or_else(|| worker::Error::from("GitHub: no object.sha in ref response"))?
             .to_string();
 
-        let commit_url = format!("https://api.github.com/repos/{}/git/commits/{}", repo, head_sha);
+        let commit_url = format!(
+            "https://api.github.com/repos/{}/git/commits/{}",
+            repo, head_sha
+        );
         let commit_resp = Self::github_get(token, &commit_url).await?;
         let base_tree_sha = commit_resp["tree"]["sha"]
             .as_str()
@@ -463,15 +577,29 @@ impl GitHubService {
         let body = resp.text().await?;
 
         if status < 200 || status >= 300 {
-            crate::log_event!("error", "github.api.get_failed", "status={} url={} body={}", status, url, body);
-            return Err(worker::Error::from(format!("GitHub GET {} failed: {}", url, body)));
+            crate::log_event!(
+                "error",
+                "github.api.get_failed",
+                "status={} url={} body={}",
+                status,
+                url,
+                body
+            );
+            return Err(worker::Error::from(format!(
+                "GitHub GET {} failed: {}",
+                url, body
+            )));
         }
 
         serde_json::from_str(&body)
             .map_err(|e| worker::Error::from(format!("GitHub GET {} JSON parse error: {}", url, e)))
     }
 
-    async fn github_post(token: &str, url: &str, payload: &serde_json::Value) -> Result<serde_json::Value> {
+    async fn github_post(
+        token: &str,
+        url: &str,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let headers = Headers::new();
         headers.set("Authorization", &format!("Bearer {}", token))?;
         headers.set("Content-Type", "application/json")?;
@@ -490,15 +618,30 @@ impl GitHubService {
         let body = resp.text().await?;
 
         if status < 200 || status >= 300 {
-            crate::log_event!("error", "github.api.post_failed", "status={} url={} body={}", status, url, body);
-            return Err(worker::Error::from(format!("GitHub POST {} failed: {}", url, body)));
+            crate::log_event!(
+                "error",
+                "github.api.post_failed",
+                "status={} url={} body={}",
+                status,
+                url,
+                body
+            );
+            return Err(worker::Error::from(format!(
+                "GitHub POST {} failed: {}",
+                url, body
+            )));
         }
 
-        serde_json::from_str(&body)
-            .map_err(|e| worker::Error::from(format!("GitHub POST {} JSON parse error: {}", url, e)))
+        serde_json::from_str(&body).map_err(|e| {
+            worker::Error::from(format!("GitHub POST {} JSON parse error: {}", url, e))
+        })
     }
 
-    async fn github_patch(token: &str, url: &str, payload: &serde_json::Value) -> Result<serde_json::Value> {
+    async fn github_patch(
+        token: &str,
+        url: &str,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let headers = Headers::new();
         headers.set("Authorization", &format!("Bearer {}", token))?;
         headers.set("Content-Type", "application/json")?;
@@ -517,12 +660,23 @@ impl GitHubService {
         let body = resp.text().await?;
 
         if status < 200 || status >= 300 {
-            crate::log_event!("error", "github.api.patch_failed", "status={} url={} body={}", status, url, body);
-            return Err(worker::Error::from(format!("GitHub PATCH {} failed: {}", url, body)));
+            crate::log_event!(
+                "error",
+                "github.api.patch_failed",
+                "status={} url={} body={}",
+                status,
+                url,
+                body
+            );
+            return Err(worker::Error::from(format!(
+                "GitHub PATCH {} failed: {}",
+                url, body
+            )));
         }
 
-        serde_json::from_str(&body)
-            .map_err(|e| worker::Error::from(format!("GitHub PATCH {} JSON parse error: {}", url, e)))
+        serde_json::from_str(&body).map_err(|e| {
+            worker::Error::from(format!("GitHub PATCH {} JSON parse error: {}", url, e))
+        })
     }
 
     fn yaml_quote(s: &str) -> String {
@@ -540,15 +694,24 @@ impl GitHubService {
         yaml.push_str(&format!("id: {}\n", item.id));
         yaml.push_str(&format!("created: {}\n", item.created));
         yaml.push_str(&format!("source: {}\n", item.source));
-        yaml.push_str(&format!("provider: {}\n", item.provider.label().to_lowercase()));
+        yaml.push_str(&format!(
+            "provider: {}\n",
+            item.provider.label().to_lowercase()
+        ));
         yaml.push_str(&format!("chat_id: {}\n", item.chat_id));
-        
+
         if let Some(ref url) = item.url {
             yaml.push_str(&format!("url: \"{}\"\n", Self::yaml_quote(url)));
         }
-        
-        yaml.push_str(&format!("type: {}\n", item.knowledge_type.label().to_lowercase()));
-        yaml.push_str(&format!("status: {}\n", item.status.label(&item.knowledge_type).to_lowercase()));
+
+        yaml.push_str(&format!(
+            "type: {}\n",
+            item.knowledge_type.label().to_lowercase()
+        ));
+        yaml.push_str(&format!(
+            "status: {}\n",
+            item.status.label(&item.knowledge_type).to_lowercase()
+        ));
         yaml.push_str(&format!("title: \"{}\"\n", Self::yaml_quote(&item.title)));
 
         if let Some(ref raw) = item.raw_text {
@@ -556,35 +719,35 @@ impl GitHubService {
                 yaml.push_str(&format!("raw_text: \"{}\"\n", Self::yaml_quote(raw)));
             }
         }
-        
+
         if let Some(ref author) = item.author {
             yaml.push_str(&format!("author: \"{}\"\n", Self::yaml_quote(author)));
         }
-        
+
         if let Some(ref language) = item.language {
             yaml.push_str(&format!("language: {}\n", language));
         }
-        
+
         if let Some(year) = item.year {
             yaml.push_str(&format!("year: {}\n", year));
         }
-        
+
         if let Some(season) = item.season {
             yaml.push_str(&format!("season: {}\n", season));
         }
-        
+
         if let Some(stars) = item.stars {
             yaml.push_str(&format!("stars: {}\n", stars));
         }
-        
+
         if let Some(rating) = item.rating {
             yaml.push_str(&format!("rating: {}\n", rating));
         }
-        
+
         if let Some(ref comment) = item.comment {
             yaml.push_str(&format!("comment: \"{}\"\n", Self::yaml_quote(comment)));
         }
-        
+
         if !item.tags.is_empty() {
             yaml.push_str("tags:\n");
             for tag in &item.tags {
@@ -604,7 +767,7 @@ impl GitHubService {
         if let Some(ref sha) = item.asset_sha256 {
             yaml.push_str(&format!("asset_sha256: {}\n", sha));
         }
-        
+
         yaml.push_str("---\n");
 
         yaml
@@ -626,7 +789,7 @@ mod tests {
         item.tags = vec!["rust".to_string(), "wasm".to_string()];
 
         let yaml = GitHubService::generate_yaml(&item);
-        
+
         assert!(yaml.contains("type: link"));
         assert!(yaml.contains("title: \"Test Article\""));
         assert!(yaml.contains("author: \"Test Author\""));

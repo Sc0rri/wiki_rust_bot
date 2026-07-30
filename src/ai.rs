@@ -1,5 +1,5 @@
-use crate::state::{KnowledgeType, LinkAnalysis, PendingItem};
 use crate::get_env_or_secret;
+use crate::state::{KnowledgeType, LinkAnalysis, PendingItem};
 use worker::*;
 
 pub struct AiService;
@@ -55,10 +55,15 @@ impl AiService {
     /// whatever description came from the page/API). A struct (not a tuple)
     /// so more fields (entities, difficulty, reading_time, ...) can be added
     /// later without changing the call signature.
-    pub async fn enrich_link(env: &Env, title: &str, existing_description: Option<&str>, url: &str) -> Result<Option<LinkAnalysis>> {
+    pub async fn enrich_link(
+        env: &Env,
+        title: &str,
+        existing_description: Option<&str>,
+        url: &str,
+    ) -> Result<Option<LinkAnalysis>> {
         let context = existing_description.unwrap_or("");
         let prompt = format!(
-             "A link was saved with title \"{}\" (url: {}). Existing description: \"{}\".\n\
+            "A link was saved with title \"{}\" (url: {}). Existing description: \"{}\".\n\
              Explain in 1-2 sentences: what this resource is, why it's useful, and who would benefit from it.\n\
              Write a factual summary — avoid promotional or marketing language, and don't just restate the title.\n\
              Then extract 2-5 topic tags. Use canonical technology/concept names \
@@ -82,11 +87,18 @@ impl AiService {
             None => return Ok(None),
         };
 
-        let summary = parsed.get("summary").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let summary = parsed
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let topics: Vec<String> = parsed
             .get("topics")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
 
         match summary {
@@ -101,7 +113,11 @@ impl AiService {
     /// still return text even when a schema is requested) — treating only the
     /// string case as valid was a likely source of intermittent "AI doesn't
     /// work" failures.
-    async fn run_json_with_schema(env: &Env, prompt: &str, schema: &serde_json::Value) -> Result<Option<serde_json::Value>> {
+    async fn run_json_with_schema(
+        env: &Env,
+        prompt: &str,
+        schema: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>> {
         let ai = match env.ai("AI") {
             Ok(ai) => ai,
             Err(e) => {
@@ -171,13 +187,26 @@ impl AiService {
             .unwrap_or(fallback_title)
             .to_string();
 
-        let author = parsed.get("author").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let year = parsed.get("year").and_then(|v| v.as_i64()).map(|y| y as i32);
-        let description = parsed.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let author = parsed
+            .get("author")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let year = parsed
+            .get("year")
+            .and_then(|v| v.as_i64())
+            .map(|y| y as i32);
+        let description = parsed
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let tags: Vec<String> = parsed
             .get("tags")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let mut item = PendingItem::new(title, knowledge_type, chat_id);
@@ -191,7 +220,11 @@ impl AiService {
 
     /// Format a preview of the AI analysis for display to the user
     pub fn format_preview(item: &PendingItem) -> String {
-        let mut preview = format!("🤖 Looks like: {} {}\n", item.knowledge_type.emoji(), item.title);
+        let mut preview = format!(
+            "🤖 Looks like: {} {}\n",
+            item.knowledge_type.emoji(),
+            item.title
+        );
         if let Some(ref author) = item.author {
             preview.push_str(&format!("   👤 {}\n", author));
         }

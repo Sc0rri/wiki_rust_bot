@@ -67,15 +67,25 @@ mod tests {
 
     #[test]
     fn slugify_should_create_url_slug() {
-        assert_eq!(ParserService::slugify("Lord of the Rings"), "lord-of-the-rings");
-        assert_eq!(ParserService::slugify("The Matrix (1999)"), "the-matrix-1999");
+        assert_eq!(
+            ParserService::slugify("Lord of the Rings"),
+            "lord-of-the-rings"
+        );
+        assert_eq!(
+            ParserService::slugify("The Matrix (1999)"),
+            "the-matrix-1999"
+        );
     }
 
     #[test]
     fn slugify_should_cap_length_for_long_text() {
         let long_text = "a ".repeat(200); // 400 chars of "a a a a ..."
         let slug = ParserService::slugify(&long_text);
-        assert!(slug.chars().count() <= 60, "slug was {} chars", slug.chars().count());
+        assert!(
+            slug.chars().count() <= 60,
+            "slug was {} chars",
+            slug.chars().count()
+        );
     }
 
     #[test]

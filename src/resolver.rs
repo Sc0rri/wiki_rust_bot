@@ -7,7 +7,8 @@ pub struct Resolver;
 impl Resolver {
     /// Fetch GitHub repo metadata: description, language, stars, topics
     pub async fn resolve_github(env: &Env, owner_repo: &str) -> Result<Option<PendingItem>> {
-        let token = env.secret("GITHUB_TOKEN")
+        let token = env
+            .secret("GITHUB_TOKEN")
             .map(|s| s.to_string())
             .unwrap_or_default();
 
@@ -33,14 +34,24 @@ impl Resolver {
 
         let body: serde_json::Value = resp.json().await?;
 
-        let name = body.get("name").and_then(|v| v.as_str()).unwrap_or(owner_repo);
+        let name = body
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(owner_repo);
         let description = body.get("description").and_then(|v| v.as_str());
         let language = body.get("language").and_then(|v| v.as_str());
-        let stars = body.get("stargazers_count").and_then(|v| v.as_i64()).map(|s| s as i32);
+        let stars = body
+            .get("stargazers_count")
+            .and_then(|v| v.as_i64())
+            .map(|s| s as i32);
         let topics: Vec<String> = body
             .get("topics")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let mut item = PendingItem::new(name.to_string(), KnowledgeType::Link, 0);
@@ -102,8 +113,14 @@ impl Resolver {
         }
 
         let body: serde_json::Value = resp.json().await?;
-        let title = body.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let author = body.get("author_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let title = body
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let author = body
+            .get("author_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         Ok(title.map(|t| (t, author)))
     }
@@ -201,10 +218,7 @@ mod tests {
             Resolver::parse_github_url("https://github.com/rust-lang/rust/issues"),
             Some("rust-lang/rust".to_string())
         );
-        assert_eq!(
-            Resolver::parse_github_url("https://example.com"),
-            None
-        );
+        assert_eq!(Resolver::parse_github_url("https://example.com"), None);
     }
 
     #[test]
@@ -227,7 +241,13 @@ mod tests {
 
     #[test]
     fn decode_html_entities_should_unescape_common_entities() {
-        assert_eq!(Resolver::decode_html_entities("Tom &amp; Jerry"), "Tom & Jerry");
-        assert_eq!(Resolver::decode_html_entities("&quot;quoted&quot;"), "\"quoted\"");
+        assert_eq!(
+            Resolver::decode_html_entities("Tom &amp; Jerry"),
+            "Tom & Jerry"
+        );
+        assert_eq!(
+            Resolver::decode_html_entities("&quot;quoted&quot;"),
+            "\"quoted\""
+        );
     }
 }

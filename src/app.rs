@@ -11,12 +11,22 @@ use worker::*;
 
 const STATE_TTL_SECONDS: u64 = 1800; // 30 minutes
 
+#[derive(Debug, Clone, Copy)]
+enum LogFlushMode {
+    FlushNow,
+    DeferUntilItemSave,
+}
+
+fn should_flush_logs_immediately(mode: LogFlushMode) -> bool {
+    matches!(mode, LogFlushMode::FlushNow)
+}
+
 pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result<()> {
     let update: Update = match serde_json::from_str(&update_raw) {
         Ok(update) => update,
         Err(err) => {
             log_event!("warn", "telegram.update.invalid_json", "error={}", err);
-            flush_remaining_logs(&env, &ctx).await;
+            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
             return Ok(());
         }
     };
@@ -24,7 +34,7 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
     let allowed_username = get_env_or_secret(&env, "ALLOWED_USERNAME", "");
     if allowed_username.is_empty() {
         log_event!("error", "config.allowed_username_missing");
-        flush_remaining_logs(&env, &ctx).await;
+        flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
         return Ok(());
     }
 
@@ -36,7 +46,7 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
     if let Some(msg) = update.message {
         let sender = msg.from.as_ref();
         if !username_is_allowed(sender.and_then(|u| u.username.as_ref()), &allowed_username) {
-            flush_remaining_logs(&env, &ctx).await;
+            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
             return Ok(());
         }
 
@@ -52,7 +62,13 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
             let has_document = msg.document.is_some();
             let has_reply = msg.reply_to_message.is_some();
             let has_forward = msg.forward_origin.is_some();
-            let text_preview = msg.text.as_deref().unwrap_or("").chars().take(50).collect::<String>();
+            let text_preview = msg
+                .text
+                .as_deref()
+                .unwrap_or("")
+                .chars()
+                .take(50)
+                .collect::<String>();
             log_event!(
                 "debug",
                 "telegram.message.incoming",
@@ -81,15 +97,28 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                         let item_id = item_id.to_string();
                         let env_clone = env.clone();
                         ctx.wait_until(async move {
-                            match GitHubService::save_reply_to_inbox(&env_clone, &item_id, &answer).await {
+                            match GitHubService::save_reply_to_inbox(&env_clone, &item_id, &answer)
+                                .await
+                            {
                                 Ok(_) => {
                                     let bot_token = get_env_or_secret(&env_clone, "BOT_TOKEN", "");
-                                    let _ = TelegramService::send_message(&bot_token, chat_id, "Спасибо, уточнил(а)! 🙌", None).await;
+                                    let _ = TelegramService::send_message(
+                                        &bot_token,
+                                        chat_id,
+                                        "Спасибо, уточнил(а)! 🙌",
+                                        None,
+                                    )
+                                    .await;
                                 }
-                                Err(e) => log_event!("error", "clarification.reply.failed", "error={:?}", e),
+                                Err(e) => log_event!(
+                                    "error",
+                                    "clarification.reply.failed",
+                                    "error={:?}",
+                                    e
+                                ),
                             }
                         });
-                        flush_remaining_logs(&env, &ctx).await;
+                        flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
                         return Ok(());
                     }
                 }
@@ -108,11 +137,21 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                 };
                 let env_clone = env.clone();
                 ctx.wait_until(async move {
-                    if let Err(e) = handle_media(env_clone, chat_id, "image", &file_id, caption, is_forwarded, meta).await {
+                    if let Err(e) = handle_media(
+                        env_clone,
+                        chat_id,
+                        "image",
+                        &file_id,
+                        caption,
+                        is_forwarded,
+                        meta,
+                    )
+                    .await
+                    {
                         log_event!("error", "telegram.photo.failed", "error={:?}", e);
                     }
                 });
-                flush_remaining_logs(&env, &ctx).await;
+                flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::DeferUntilItemSave).await;
                 return Ok(());
             }
         }
@@ -120,24 +159,38 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
         if let Some(doc) = msg.document.as_ref().cloned() {
             let caption = msg.caption.clone();
             let is_forwarded = msg.forward_origin.is_some();
-            let meta = MediaMeta { width: None, height: None, mime: doc.mime_type.clone() };
+            let meta = MediaMeta {
+                width: None,
+                height: None,
+                mime: doc.mime_type.clone(),
+            };
             let env_clone = env.clone();
             ctx.wait_until(async move {
                 let file_name = doc.file_name.unwrap_or_default();
                 let file_id = doc.file_id.clone();
                 if file_name.to_lowercase().ends_with(".pdf") {
-                    if let Err(e) = handle_media(env_clone, chat_id, "pdf", &file_id, caption, is_forwarded, meta).await {
+                    if let Err(e) = handle_media(
+                        env_clone,
+                        chat_id,
+                        "pdf",
+                        &file_id,
+                        caption,
+                        is_forwarded,
+                        meta,
+                    )
+                    .await
+                    {
                         log_event!("error", "telegram.pdf.failed", "error={:?}", e);
                     }
                 }
             });
-            flush_remaining_logs(&env, &ctx).await;
+            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::DeferUntilItemSave).await;
             return Ok(());
         }
 
         let text = msg.text.clone().unwrap_or_default().trim().to_string();
         if text.is_empty() {
-            flush_remaining_logs(&env, &ctx).await;
+            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
             return Ok(());
         }
 
@@ -149,7 +202,7 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                     log_event!("error", "telegram.forwarded.failed", "error={:?}", e);
                 }
             });
-            flush_remaining_logs(&env, &ctx).await;
+            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
             return Ok(());
         }
 
@@ -160,11 +213,17 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                     log_event!("error", "telegram.command.failed", "error={:?}", e);
                 }
             });
-            flush_remaining_logs(&env, &ctx).await;
+            flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
             return Ok(());
         }
 
-        log_event!("info", "telegram.text.received", "chat_id={} text={}", chat_id, text.chars().count());
+        log_event!(
+            "info",
+            "telegram.text.received",
+            "chat_id={} text={}",
+            chat_id,
+            text.chars().count()
+        );
         let env_clone = env.clone();
         ctx.wait_until(async move {
             if let Err(e) = handle_text(env_clone, chat_id, text).await {
@@ -174,7 +233,7 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
     }
 
     // Flush remaining buffered logs (from the text processing path).
-    flush_remaining_logs(&env, &ctx).await;
+    flush_remaining_logs_if_needed(&env, &ctx, LogFlushMode::FlushNow).await;
 
     Ok(())
 }
@@ -183,7 +242,11 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
 /// task. Called before every early return in handle_update so that logs from
 /// commands, media, forwarded messages, etc. are persisted even when no
 /// pending item is being saved.
-async fn flush_remaining_logs(env: &Env, ctx: &Context) {
+async fn flush_remaining_logs_if_needed(env: &Env, ctx: &Context, mode: LogFlushMode) {
+    if !should_flush_logs_immediately(mode) {
+        return;
+    }
+
     let env_clone = env.clone();
     let remaining = crate::logger::flush_logs();
     if !remaining.is_empty() {
@@ -202,7 +265,10 @@ async fn handle_command(env: Env, chat_id: i64, text: &str) -> Result<()> {
     let command = text.split_whitespace().next().unwrap_or("").to_lowercase();
 
     let reply: String = match command.as_str() {
-        "/start" => "👋 Send a link, a photo, a PDF, or just type something to add it to your wiki inbox.".to_string(),
+        "/start" => {
+            "👋 Send a link, a photo, a PDF, or just type something to add it to your wiki inbox."
+                .to_string()
+        }
         "/cancel" => {
             let kv = env.kv("STATE_STORE")?;
             delete_state(&kv, &format!("{}_state", chat_id), chat_id).await?;
@@ -211,7 +277,10 @@ async fn handle_command(env: Env, chat_id: i64, text: &str) -> Result<()> {
         "/clear" => {
             let dedup_kv = env.kv("DEDUP_STORE")?;
             match DedupService::clear_all(&dedup_kv).await {
-                Ok(count) => format!("🧹 Cleared {} dedup entries. Everything will be treated as new again.", count),
+                Ok(count) => format!(
+                    "🧹 Cleared {} dedup entries. Everything will be treated as new again.",
+                    count
+                ),
                 Err(e) => {
                     log_event!("error", "dedup.clear.failed", "error={:?}", e);
                     format!("❌ Couldn't clear dedup store: {}", e)
@@ -221,7 +290,13 @@ async fn handle_command(env: Env, chat_id: i64, text: &str) -> Result<()> {
         _ => "Unknown command. Try /start.".to_string(),
     };
 
-    TelegramService::send_message(&bot_token, chat_id, &reply, Some(TelegramService::remove_keyboard())).await?;
+    TelegramService::send_message(
+        &bot_token,
+        chat_id,
+        &reply,
+        Some(TelegramService::remove_keyboard()),
+    )
+    .await?;
     Ok(())
 }
 
@@ -252,7 +327,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
     digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-async fn handle_media(env: Env, chat_id: i64, media_type: &str, file_id: &str, caption: Option<String>, is_forwarded: bool, meta: MediaMeta) -> Result<()> {
+async fn handle_media(
+    env: Env,
+    chat_id: i64,
+    media_type: &str,
+    file_id: &str,
+    caption: Option<String>,
+    is_forwarded: bool,
+    meta: MediaMeta,
+) -> Result<()> {
     let bot_token = env.secret("BOT_TOKEN")?.to_string();
 
     let label = match media_type {
@@ -344,7 +427,13 @@ async fn handle_media(env: Env, chat_id: i64, media_type: &str, file_id: &str, c
     } else {
         "⚠️ Couldn't archive the file (network/GitHub error) — saved a reference only, check logs."
     };
-    TelegramService::send_message(&bot_token, chat_id, &format!("{}\nAdd a comment or skip:", status_line), Some(TelegramService::skip_keyboard())).await?;
+    TelegramService::send_message(
+        &bot_token,
+        chat_id,
+        &format!("{}\nAdd a comment or skip:", status_line),
+        Some(TelegramService::skip_keyboard()),
+    )
+    .await?;
     Ok(())
 }
 
@@ -368,7 +457,8 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
                 chat_id,
                 "⏰ Your previous draft expired (30 min timeout). Please start over.",
                 Some(TelegramService::remove_keyboard()),
-            ).await?;
+            )
+            .await?;
             return Ok(());
         }
     }
@@ -377,7 +467,13 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
 
     if transition == TextTransition::Cancel {
         delete_state(&kv, &state_key, chat_id).await?;
-        TelegramService::send_message(&bot_token, chat_id, "❌ Cancelled.", Some(TelegramService::remove_keyboard())).await?;
+        TelegramService::send_message(
+            &bot_token,
+            chat_id,
+            "❌ Cancelled.",
+            Some(TelegramService::remove_keyboard()),
+        )
+        .await?;
         return Ok(());
     }
 
@@ -388,11 +484,17 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
                 let mut item = PendingItem::new(raw_text, kt.clone(), chat_id);
                 item.source = "telegram".to_string();
                 item.raw_text = Some(item.title.clone());
-                proceed_with_item(env, &bot_token, &kv, &dedup_kv, &state_key, chat_id, kt, item).await?;
+                proceed_with_item(
+                    env, &bot_token, &kv, &dedup_kv, &state_key, chat_id, kt, item,
+                )
+                .await?;
             }
             UserState::AwaitingAiConfirm { mut item } => {
                 item.knowledge_type = kt.clone();
-                proceed_with_item(env, &bot_token, &kv, &dedup_kv, &state_key, chat_id, kt, item).await?;
+                proceed_with_item(
+                    env, &bot_token, &kv, &dedup_kv, &state_key, chat_id, kt, item,
+                )
+                .await?;
             }
             _ => {}
         },
@@ -413,12 +515,22 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
                 item.rating = if rating == 0 { None } else { Some(rating) };
                 let state = UserState::AwaitingComment { item };
                 save_state(&kv, &state_key, &state).await?;
-                TelegramService::send_message(&bot_token, chat_id, "Add a comment or skip:", Some(TelegramService::skip_keyboard())).await?;
+                TelegramService::send_message(
+                    &bot_token,
+                    chat_id,
+                    "Add a comment or skip:",
+                    Some(TelegramService::skip_keyboard()),
+                )
+                .await?;
             }
         }
         TextTransition::SetComment(comment) => {
             if let UserState::AwaitingComment { mut item } = state {
-                item.comment = if comment.is_empty() { None } else { Some(comment) };
+                item.comment = if comment.is_empty() {
+                    None
+                } else {
+                    Some(comment)
+                };
                 delete_state(&kv, &state_key, chat_id).await?;
                 save_and_finish(env, &bot_token, &dedup_kv, chat_id, item).await?;
             }
@@ -426,7 +538,10 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
         TextTransition::ConfirmAi => {
             if let UserState::AwaitingAiConfirm { item } = state {
                 let kt = item.knowledge_type.clone();
-                proceed_with_item(env, &bot_token, &kv, &dedup_kv, &state_key, chat_id, kt, item).await?;
+                proceed_with_item(
+                    env, &bot_token, &kv, &dedup_kv, &state_key, chat_id, kt, item,
+                )
+                .await?;
             }
         }
         TextTransition::ProcessFresh => {
@@ -447,10 +562,19 @@ async fn proceed_after_status(
     chat_id: i64,
     item: PendingItem,
 ) -> Result<()> {
-    if matches!(item.knowledge_type, KnowledgeType::Series | KnowledgeType::Anime) {
+    if matches!(
+        item.knowledge_type,
+        KnowledgeType::Series | KnowledgeType::Anime
+    ) {
         let state = UserState::AwaitingSeason { item };
         save_state(kv, state_key, &state).await?;
-        TelegramService::send_message(bot_token, chat_id, "Season? (number or skip)", Some(TelegramService::skip_keyboard())).await?;
+        TelegramService::send_message(
+            bot_token,
+            chat_id,
+            "Season? (number or skip)",
+            Some(TelegramService::skip_keyboard()),
+        )
+        .await?;
     } else {
         proceed_after_season(kv, bot_token, state_key, chat_id, item).await?;
     }
@@ -467,11 +591,23 @@ async fn proceed_after_season(
     if item.status.needs_rating() {
         let state = UserState::AwaitingRating { item };
         save_state(kv, state_key, &state).await?;
-        TelegramService::send_message(bot_token, chat_id, "Rate 1-10 or skip:", Some(TelegramService::skip_keyboard())).await?;
+        TelegramService::send_message(
+            bot_token,
+            chat_id,
+            "Rate 1-10 or skip:",
+            Some(TelegramService::skip_keyboard()),
+        )
+        .await?;
     } else {
         let state = UserState::AwaitingComment { item };
         save_state(kv, state_key, &state).await?;
-        TelegramService::send_message(bot_token, chat_id, "Add a comment or skip:", Some(TelegramService::skip_keyboard())).await?;
+        TelegramService::send_message(
+            bot_token,
+            chat_id,
+            "Add a comment or skip:",
+            Some(TelegramService::skip_keyboard()),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -495,7 +631,13 @@ async fn proceed_with_item(
         let status_kb = TelegramService::status_keyboard(&kt);
         let state = UserState::AwaitingStatus { item };
         save_state(kv, state_key, &state).await?;
-        TelegramService::send_message(bot_token, chat_id, &format!("{} Status?", kt.emoji()), Some(status_kb)).await?;
+        TelegramService::send_message(
+            bot_token,
+            chat_id,
+            &format!("{} Status?", kt.emoji()),
+            Some(status_kb),
+        )
+        .await?;
     } else {
         delete_state(kv, state_key, chat_id).await?;
         save_and_finish(env, bot_token, dedup_kv, chat_id, item).await?;
@@ -503,12 +645,21 @@ async fn proceed_with_item(
     Ok(())
 }
 
-async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStore, chat_id: i64, text: &str) -> Result<()> {
+async fn process_fresh(
+    env: Env,
+    bot_token: &str,
+    _dedup_kv: &worker::kv::KvStore,
+    chat_id: i64,
+    text: &str,
+) -> Result<()> {
     if ParserService::is_url(text) {
         let detected = Detector::detect(text);
 
         let mut item = PendingItem::new(
-            detected.title.clone().unwrap_or_else(|| format!("{} link", detected.provider.label())),
+            detected
+                .title
+                .clone()
+                .unwrap_or_else(|| format!("{} link", detected.provider.label())),
             KnowledgeType::Link,
             chat_id,
         );
@@ -582,7 +733,14 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
         // mechanical resolution above, ask AI for what it's actually good
         // for: a short summary and topic tags — not "what type is this",
         // which is already known (it's a Link).
-        match AiService::enrich_link(&env, &item.title, item.description.as_deref(), &detected.url).await {
+        match AiService::enrich_link(
+            &env,
+            &item.title,
+            item.description.as_deref(),
+            &detected.url,
+        )
+        .await
+        {
             Ok(Some(analysis)) => {
                 item.description = Some(analysis.summary);
                 for topic in analysis.topics {
@@ -609,7 +767,8 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
             chat_id,
             &format!("{}\nAdd a comment or skip:", preview),
             Some(TelegramService::skip_keyboard()),
-        ).await?;
+        )
+        .await?;
     } else {
         // Plain text: let AI decide if it's a Book/Movie/Series/Anime — anything
         // else (or an AI failure) falls back to a manual pick from those four + Note.
@@ -620,10 +779,22 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
                 let state = UserState::AwaitingAiConfirm { item };
                 let state_kv = env.kv("STATE_STORE")?;
                 save_state(&state_kv, &format!("{}_state", chat_id), &state).await?;
-                TelegramService::send_message(bot_token, chat_id, &preview, Some(TelegramService::confirm_ai_keyboard())).await?;
+                TelegramService::send_message(
+                    bot_token,
+                    chat_id,
+                    &preview,
+                    Some(TelegramService::confirm_ai_keyboard()),
+                )
+                .await?;
             }
             _ => {
-                TelegramService::send_message(bot_token, chat_id, "Couldn't detect type automatically.\n\nWhat type?", Some(TelegramService::type_keyboard())).await?;
+                TelegramService::send_message(
+                    bot_token,
+                    chat_id,
+                    "Couldn't detect type automatically.\n\nWhat type?",
+                    Some(TelegramService::type_keyboard()),
+                )
+                .await?;
                 let kv = env.kv("STATE_STORE")?;
                 let state = UserState::AwaitingType {
                     raw_text: text.to_string(),
@@ -637,14 +808,32 @@ async fn process_fresh(env: Env, bot_token: &str, _dedup_kv: &worker::kv::KvStor
     Ok(())
 }
 
-async fn save_and_finish(env: Env, bot_token: &str, dedup_kv: &worker::kv::KvStore, chat_id: i64, item: PendingItem) -> Result<()> {
+async fn save_and_finish(
+    env: Env,
+    bot_token: &str,
+    dedup_kv: &worker::kv::KvStore,
+    chat_id: i64,
+    item: PendingItem,
+) -> Result<()> {
     let dedup_key = DedupService::title_key(&item.title);
     if DedupService::is_processed(dedup_kv, &dedup_key).await? {
-        TelegramService::send_message(bot_token, chat_id, "⚠️ Already saved.", Some(TelegramService::remove_keyboard())).await?;
+        TelegramService::send_message(
+            bot_token,
+            chat_id,
+            "⚠️ Already saved.",
+            Some(TelegramService::remove_keyboard()),
+        )
+        .await?;
         return Ok(());
     }
 
-    TelegramService::send_message(bot_token, chat_id, "⏳ Saving...", Some(TelegramService::remove_keyboard())).await?;
+    TelegramService::send_message(
+        bot_token,
+        chat_id,
+        "⏳ Saving...",
+        Some(TelegramService::remove_keyboard()),
+    )
+    .await?;
 
     let log_lines = crate::logger::flush_logs();
     match GitHubService::save_to_inbox(&env, &item, &log_lines).await {
@@ -655,18 +844,32 @@ async fn save_and_finish(env: Env, bot_token: &str, dedup_kv: &worker::kv::KvSto
                 log_event!("warn", "dedup.mark.title_failed", "error={:?}", e);
             }
             if let Some(ref url) = item.url {
-                if let Err(e) = DedupService::mark_processed(dedup_kv, &DedupService::url_key(url)).await {
+                if let Err(e) =
+                    DedupService::mark_processed(dedup_kv, &DedupService::url_key(url)).await
+                {
                     log_event!("warn", "dedup.mark.url_failed", "error={:?}", e);
                 }
             }
-            TelegramService::send_message(bot_token, chat_id, &format!("✅ Saved:\n{}", path), Some(TelegramService::remove_keyboard())).await?;
+            TelegramService::send_message(
+                bot_token,
+                chat_id,
+                &format!("✅ Saved:\n{}", path),
+                Some(TelegramService::remove_keyboard()),
+            )
+            .await?;
         }
         Err(e) => {
             // Write the error directly via append_log (Contents API) so it's
             // visible in the log file even if the Git Data API commit failed.
             let error_msg = format!("save_to_inbox failed: {:?}", e);
             GitHubService::append_log(&env, "error", "save_and_finish.failed", &error_msg).await;
-            TelegramService::send_message(bot_token, chat_id, &format!("❌ Error: {}", e), Some(TelegramService::remove_keyboard())).await?;
+            TelegramService::send_message(
+                bot_token,
+                chat_id,
+                &format!("❌ Error: {}", e),
+                Some(TelegramService::remove_keyboard()),
+            )
+            .await?;
         }
     }
     Ok(())
@@ -674,12 +877,20 @@ async fn save_and_finish(env: Env, bot_token: &str, dedup_kv: &worker::kv::KvSto
 
 fn build_preview(item: &PendingItem) -> String {
     let mut preview = format!("{} {}\n", item.knowledge_type.emoji(), item.title);
-    if let Some(ref url) = item.url { preview.push_str(&format!("🔗 {}\n", url)); }
-    if !item.provider.label().is_empty() { preview.push_str(&format!("📦 {}\n", item.provider.label())); }
+    if let Some(ref url) = item.url {
+        preview.push_str(&format!("🔗 {}\n", url));
+    }
+    if !item.provider.label().is_empty() {
+        preview.push_str(&format!("📦 {}\n", item.provider.label()));
+    }
     if item.stars.is_some() || item.language.is_some() {
         let mut meta = Vec::new();
-        if let Some(stars) = item.stars { meta.push(format!("⭐ {}", stars)); }
-        if let Some(ref lang) = item.language { meta.push(lang.clone()); }
+        if let Some(stars) = item.stars {
+            meta.push(format!("⭐ {}", stars));
+        }
+        if let Some(ref lang) = item.language {
+            meta.push(lang.clone());
+        }
         preview.push_str(&format!("{}\n", meta.join(" · ")));
     }
     if let Some(ref desc) = item.description {
@@ -689,21 +900,35 @@ fn build_preview(item: &PendingItem) -> String {
         preview.push_str(&format!("🏷 {}\n", item.tags.join(", ")));
     }
     if item.knowledge_type.has_status_options() {
-        preview.push_str(&format!("📌 Status: {}\n", item.status.label(&item.knowledge_type)));
+        preview.push_str(&format!(
+            "📌 Status: {}\n",
+            item.status.label(&item.knowledge_type)
+        ));
     }
-    if let Some(season) = item.season { preview.push_str(&format!("📀 Season {}\n", season)); }
-    if let Some(r) = item.rating { preview.push_str(&format!("🌟 {}/10\n", r)); }
-    if let Some(ref c) = item.comment { preview.push_str(&format!("💬 \"{}\"\n", c)); }
+    if let Some(season) = item.season {
+        preview.push_str(&format!("📀 Season {}\n", season));
+    }
+    if let Some(r) = item.rating {
+        preview.push_str(&format!("🌟 {}/10\n", r));
+    }
+    if let Some(ref c) = item.comment {
+        preview.push_str(&format!("💬 \"{}\"\n", c));
+    }
     preview
 }
 
 async fn load_state(kv: &worker::kv::KvStore, state_key: &str) -> Result<UserState> {
-    let Some(s) = kv.get(state_key).text().await? else { return Ok(UserState::None); };
+    let Some(s) = kv.get(state_key).text().await? else {
+        return Ok(UserState::None);
+    };
     Ok(UserState::parse_or_none(&s))
 }
 
 async fn save_state(kv: &worker::kv::KvStore, state_key: &str, state: &UserState) -> Result<()> {
-    kv.put(state_key, &serde_json::to_string(state)?)?.expiration_ttl(STATE_TTL_SECONDS).execute().await?;
+    kv.put(state_key, &serde_json::to_string(state)?)?
+        .expiration_ttl(STATE_TTL_SECONDS)
+        .execute()
+        .await?;
     Ok(())
 }
 
@@ -731,10 +956,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn media_messages_should_defer_log_flush_until_item_save() {
+        assert!(!should_flush_logs_immediately(
+            LogFlushMode::DeferUntilItemSave
+        ));
+        assert!(should_flush_logs_immediately(LogFlushMode::FlushNow));
+    }
+
+    #[test]
     fn state_name_should_return_correct_names() {
         assert_eq!(state_name(&UserState::None), "none");
         assert_eq!(
-            state_name(&UserState::AwaitingType { raw_text: "test".to_string(), detected: None, media_file_id: None }),
+            state_name(&UserState::AwaitingType {
+                raw_text: "test".to_string(),
+                detected: None,
+                media_file_id: None
+            }),
             "awaiting_type"
         );
     }

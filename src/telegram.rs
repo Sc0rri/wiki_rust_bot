@@ -105,14 +105,23 @@ impl TelegramService {
     /// file_id is stable but file_path/the download URL is short-lived — this
     /// must be called right before downloading, not cached.
     pub async fn get_file_path(bot_token: &str, file_id: &str) -> Result<Option<String>> {
-        let url = format!("https://api.telegram.org/bot{}/getFile?file_id={}", bot_token, file_id);
+        let url = format!(
+            "https://api.telegram.org/bot{}/getFile?file_id={}",
+            bot_token, file_id
+        );
         let mut req_init = RequestInit::new();
         req_init.with_method(Method::Get);
         let req = Request::new_with_init(&url, &req_init)?;
         let mut resp = Fetch::Request(req).send().await?;
         if resp.status_code() != 200 {
             let body = resp.text().await?;
-            crate::log_event!("warn", "telegram.getfile.failed", "status={} body_chars={}", resp.status_code(), body.chars().count());
+            crate::log_event!(
+                "warn",
+                "telegram.getfile.failed",
+                "status={} body_chars={}",
+                resp.status_code(),
+                body.chars().count()
+            );
             return Ok(None);
         }
         let value: serde_json::Value = resp.json().await?;
@@ -125,13 +134,19 @@ impl TelegramService {
 
     /// Downloads the raw bytes of a file previously resolved via get_file_path.
     pub async fn download_file(bot_token: &str, file_path: &str) -> Result<Vec<u8>> {
-        let url = format!("https://api.telegram.org/file/bot{}/{}", bot_token, file_path);
+        let url = format!(
+            "https://api.telegram.org/file/bot{}/{}",
+            bot_token, file_path
+        );
         let mut req_init = RequestInit::new();
         req_init.with_method(Method::Get);
         let req = Request::new_with_init(&url, &req_init)?;
         let mut resp = Fetch::Request(req).send().await?;
         if resp.status_code() != 200 {
-            return Err(worker::Error::from(format!("Telegram file download failed: status {}", resp.status_code())));
+            return Err(worker::Error::from(format!(
+                "Telegram file download failed: status {}",
+                resp.status_code()
+            )));
         }
         resp.bytes().await
     }
