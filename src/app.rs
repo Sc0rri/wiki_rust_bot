@@ -34,7 +34,9 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
 
         let chat_id = msg.chat.id;
 
-        // Log incoming message details for debugging to inbox/logs/<date>.log
+        // Log incoming message details — goes into the buffer and will be
+        // flushed to inbox/logs/<date>.log atomically with the next pending
+        // item commit, or at the end of handle_update via flush_logs_only.
         {
             let has_text = msg.text.is_some();
             let has_caption = msg.caption.is_some();
@@ -43,7 +45,9 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
             let has_reply = msg.reply_to_message.is_some();
             let has_forward = msg.forward_origin.is_some();
             let text_preview = msg.text.as_deref().unwrap_or("").chars().take(50).collect::<String>();
-            let log_msg = format!(
+            log_event!(
+                "debug",
+                "telegram.message.incoming",
                 "chat_id={} from={:?} text_preview=\"{}\" has_text={} has_caption={} has_photo={} has_document={} has_reply={} has_forward={}",
                 chat_id,
                 msg.from.as_ref().map(|u| u.id),
@@ -55,10 +59,6 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
                 has_reply,
                 has_forward,
             );
-            let env_clone = env.clone();
-            ctx.wait_until(async move {
-                GitHubService::append_log(&env_clone, "debug", "telegram.message.incoming", &log_msg).await;
-            });
         }
 
         // A reply to one of our own clarifying questions ("[ref:<id>]" in
@@ -158,6 +158,14 @@ pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result
             }
         });
     }
+
+    // Flush any remaining buffered log lines (from commands, non-save paths)
+    // to inbox/logs/<date>.log. This is a best-effort background task.
+    let env_clone = env.clone();
+    ctx.wait_until(async move {
+        let remaining = crate::logger::flush_logs();
+        GitHubService::flush_logs_only(&env_clone, &remaining).await;
+    });
 
     Ok(())
 }

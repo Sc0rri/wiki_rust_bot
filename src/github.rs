@@ -10,6 +10,9 @@ impl GitHubService {
     /// Commits a binary file (photo/PDF) into inbox/assets/, returning the
     /// committed path. Unlike a Telegram file_id (which can expire), this is
     /// a permanent copy living in the private repo.
+    ///
+    /// If the file already exists (409 Conflict), fetches the existing SHA
+    /// and retries with an update instead of a create.
     pub async fn save_asset(env: &Env, filename: &str, bytes: &[u8]) -> Result<String> {
         let token = env.secret("GITHUB_TOKEN")?.to_string();
         let repo = get_env_or_secret(env, "GITHUB_REPO", "Sc0rri/wiki");
@@ -17,43 +20,27 @@ impl GitHubService {
         let path = format!("inbox/assets/{}", filename);
         let content_base64 = STANDARD.encode(bytes);
 
-        let url = format!("https://api.github.com/repos/{}/contents/{}", repo, path);
-
-        let payload = serde_json::json!({
-            "message": format!("Add asset: {}", filename),
-            "content": content_base64,
-            "branch": "main"
-        });
-
-        let headers = Headers::new();
-        headers.set("Authorization", &format!("Bearer {}", token))?;
-        headers.set("Content-Type", "application/json")?;
-        headers.set("User-Agent", "wiki-rust-bot")?;
-
-        let mut req_init = RequestInit::new();
-        req_init.with_method(Method::Put);
-        req_init.with_headers(headers);
-        req_init.with_body(Some(serde_json::to_string(&payload)?.into()));
-
-        let req = Request::new_with_init(&url, &req_init)?;
-        let mut resp = Fetch::Request(req).send().await?;
-
-        if resp.status_code() != 201 && resp.status_code() != 200 {
-            let err_text = resp.text().await?;
-            crate::log_event!(
-                "error",
-                "github.asset.failed",
-                "status={} body={}",
-                resp.status_code(),
-                err_text
-            );
-            return Err(worker::Error::from(format!(
-                "GitHub API error: {}",
-                err_text
-            )));
+        // Try to create the file without SHA (first attempt).
+        match Self::put_contents(&token, &repo, &path, &content_base64, None).await {
+            Ok(_) => {
+                crate::log_event!("info", "github.asset.created", "path={}", path);
+                Ok(path)
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                // 409 = file already exists → fetch its SHA and update.
+                if err_str.contains("409") || err_str.contains("is at") {
+                    crate::log_event!("warn", "github.asset.conflict", "path={} retrying with sha", path);
+                    let sha = Self::get_file_sha(&token, &repo, &path).await?;
+                    Self::put_contents(&token, &repo, &path, &content_base64, Some(&sha)).await?;
+                    crate::log_event!("info", "github.asset.updated", "path={}", path);
+                    Ok(path)
+                } else {
+                    crate::log_event!("error", "github.asset.failed", "status=409 body={}", err_str);
+                    Err(e)
+                }
+            }
         }
-
-        Ok(path)
     }
 
     /// Saves a pending item to inbox/pending/ and atomically appends all
@@ -99,6 +86,45 @@ impl GitHubService {
         );
 
         Ok(pending_path)
+    }
+
+    /// Flushes any remaining buffered log lines to inbox/logs/<date>.log
+    /// without a pending item. Called at the end of handle_update to ensure
+    /// logs from commands and other non-save paths are persisted.
+    pub async fn flush_logs_only(env: &Env, log_lines: &[String]) {
+        if log_lines.is_empty() {
+            return;
+        }
+        let token = match env.secret("GITHUB_TOKEN") {
+            Ok(t) => t.to_string(),
+            Err(_) => return,
+        };
+        let repo = get_env_or_secret(env, "GITHUB_REPO", "Sc0rri/wiki");
+
+        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let log_path = format!("inbox/logs/{}.log", date);
+        let log_content = log_lines.join("\n") + "\n";
+
+        match Self::commit_files(
+            &token,
+            &repo,
+            &format!("Logs: {} entries [{}]", log_lines.len(), date),
+            &[(&log_path, &log_content)],
+        ).await {
+            Ok(_sha) => {}
+            Err(e) => {
+                // Fallback to Contents API if Git Data API fails.
+                crate::log_event!("warn", "github.flush_logs.fallback", "error={:?}", e);
+                for line in log_lines {
+                    // Extract level, name, message from the formatted line.
+                    // Format: "2026-07-30T10:10:10.843Z [error] name - msg"
+                    let level = line.split('[').nth(1).and_then(|s| s.split(']').next()).unwrap_or("info");
+                    let name = line.split("] ").nth(1).and_then(|s| s.split(" - ").next()).unwrap_or("unknown");
+                    let msg = line.split(" - ").nth(1).unwrap_or(line);
+                    Self::append_log(env, level, name, msg).await;
+                }
+            }
+        }
     }
 
     /// Writes a user's answer to a clarifying question the compiler asked,
@@ -166,13 +192,9 @@ impl GitHubService {
 
     /// Appends a log line to inbox/logs/<date>.log in the GitHub repo.
     /// Uses GET (to fetch existing content) + PUT (to overwrite with appended
-    /// line). Best-effort: if GET fails (e.g. first write of the day) it
-    /// starts a new file; if a concurrent write races, one may be lost —
-    /// acceptable for debug logs.
-    ///
-    /// This is kept for standalone log writes (e.g. from reply saving or
-    /// background tasks). The main save_to_inbox path now uses the Git Data
-    /// API to commit pending + log atomically.
+    /// line). Best-effort — only used as a fallback when the Git Data API
+    /// commit fails (see `flush_logs_only`). The main logging path now uses
+    /// the buffered log + Git Data API atomic commit.
     pub async fn append_log(env: &Env, level: &str, name: &str, message: &str) {
         let token = match env.secret("GITHUB_TOKEN") {
             Ok(t) => t.to_string(),
@@ -253,13 +275,89 @@ impl GitHubService {
         }
     }
 
+    // ── Contents API helpers ──────────────────────────────────────────────
+
+    /// PUTs a file to the GitHub Contents API. If `sha` is Some, updates an
+    /// existing file; if None, creates a new file.
+    async fn put_contents(
+        token: &str,
+        repo: &str,
+        path: &str,
+        content_base64: &str,
+        sha: Option<&str>,
+    ) -> Result<()> {
+        let url = format!("https://api.github.com/repos/{}/contents/{}", repo, path);
+
+        let mut payload = serde_json::json!({
+            "message": format!("Add asset: {}", path),
+            "content": content_base64,
+            "branch": "main"
+        });
+        if let Some(s) = sha {
+            payload.as_object_mut().unwrap().insert("sha".to_string(), serde_json::Value::String(s.to_string()));
+        }
+
+        let headers = Headers::new();
+        headers.set("Authorization", &format!("Bearer {}", token))?;
+        headers.set("Content-Type", "application/json")?;
+        headers.set("User-Agent", "wiki-rust-bot")?;
+
+        let mut req_init = RequestInit::new();
+        req_init.with_method(Method::Put);
+        req_init.with_headers(headers);
+        req_init.with_body(Some(serde_json::to_string(&payload)?.into()));
+
+        let req = Request::new_with_init(&url, &req_init)?;
+        let mut resp = Fetch::Request(req).send().await?;
+
+        if resp.status_code() != 201 && resp.status_code() != 200 {
+            let err_text = resp.text().await?;
+            return Err(worker::Error::from(format!(
+                "GitHub Contents API error ({}): {}",
+                resp.status_code(),
+                err_text
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Fetches the SHA of an existing file via the Contents API.
+    async fn get_file_sha(token: &str, repo: &str, path: &str) -> Result<String> {
+        let url = format!("https://api.github.com/repos/{}/contents/{}", repo, path);
+
+        let headers = Headers::new();
+        headers.set("Authorization", &format!("Bearer {}", token))?;
+        headers.set("User-Agent", "wiki-rust-bot")?;
+        headers.set("Accept", "application/vnd.github+json")?;
+
+        let mut req_init = RequestInit::new();
+        req_init.with_method(Method::Get);
+        req_init.with_headers(headers);
+
+        let req = Request::new_with_init(&url, &req_init)?;
+        let mut resp = Fetch::Request(req).send().await?;
+
+        let status = resp.status_code();
+        if status != 200 {
+            let body = resp.text().await?;
+            return Err(worker::Error::from(format!(
+                "GitHub GET {} failed ({}): {}",
+                path, status, body
+            )));
+        }
+
+        let body: serde_json::Value = resp.json().await?;
+        body["sha"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| worker::Error::from(format!("No SHA in response for {}", path)))
+    }
+
     // ── Git Data API helpers ──────────────────────────────────────────────
 
     /// Creates a tree with the given files and commits it to `refs/heads/main`
     /// in a single atomic operation. Returns the new commit SHA.
-    ///
-    /// Each entry is `(path, content_string)` — content is UTF-8 text, not
-    /// base64 (the API accepts raw text in the tree object).
     async fn commit_files(
         token: &str,
         repo: &str,
@@ -281,12 +379,10 @@ impl GitHubService {
             .ok_or_else(|| worker::Error::from("GitHub: no tree.sha in commit response"))?
             .to_string();
 
-        // 2. Build tree entries. For each file, we need to check if it already
-        //    exists (to get its mode) or create it as a new blob.
+        // 2. Build tree entries.
         let mut tree_entries: Vec<serde_json::Value> = Vec::new();
 
         for (path, content) in files {
-            // Create a blob for the file content.
             let blob_sha = Self::create_blob(token, repo, content).await?;
             tree_entries.push(serde_json::json!({
                 "path": path,
@@ -322,16 +418,13 @@ impl GitHubService {
             .to_string();
 
         // 5. Update the branch reference to point to the new commit.
-        //    force=true is safe here: this bot is the only writer to the repo,
-        //    and "not a fast forward" errors happen when two concurrent
-        //    requests race between GET (step 1) and PATCH (step 5).
+        //    force=true is safe: this bot is the only writer to the repo.
         let ref_url = format!("https://api.github.com/repos/{}/git/refs/heads/main", repo);
         let ref_payload = serde_json::json!({
             "sha": new_commit_sha,
             "force": true,
         });
-        let ref_resp = Self::github_patch(token, &ref_url, &ref_payload).await?;
-        let _ = ref_resp; // we don't need the response body
+        let _ = Self::github_patch(token, &ref_url, &ref_payload).await?;
 
         Ok(new_commit_sha)
     }
@@ -432,7 +525,7 @@ impl GitHubService {
     }
 
     fn yaml_quote(s: &str) -> String {
-        s.replace('\\', "\\\\")   // backslash first — order matters
+        s.replace('\\', "\\\\")
             .replace('"', "\\\"")
             .replace('\r', "\\r")
             .replace('\n', "\\n")
