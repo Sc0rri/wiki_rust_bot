@@ -614,8 +614,7 @@ impl GitHubService {
             //    force=true is safe: this bot is the only writer to the repo.
             let ref_url = format!("https://api.github.com/repos/{}/git/refs/heads/main", repo);
             let ref_payload = serde_json::json!({
-                "sha": new_commit_sha,
-                "force": true,
+                "sha": new_commit_sha
             });
             match Self::github_patch(token, &ref_url, &ref_payload).await {
                 Ok(_) => return Ok(new_commit_sha),
