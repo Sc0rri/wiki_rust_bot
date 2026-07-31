@@ -1,6 +1,5 @@
 use worker::*;
 
-mod ai;
 mod app;
 mod dedup;
 mod detector;

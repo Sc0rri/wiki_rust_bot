@@ -1,6 +1,6 @@
-# 🤖 Wiki LLM Bot
+# 🤖 Wiki Bot
 
-A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send links, titles, photos, or PDFs via Telegram — the bot saves YAML files to a GitHub repository for later processing by Hermes.
+A Cloudflare Worker bot for building a personal wiki knowledge base. Send links, titles, photos, or PDFs via Telegram — the bot saves YAML files to a GitHub repository for later processing by Hermes.
 
 ## ✨ Features
 
@@ -10,7 +10,6 @@ A Cloudflare Worker bot for building a personal wiki/LLM knowledge base. Send li
 - **📺 Season tracking**: Series and Anime get an extra season prompt before rating
 - **⭐ Rating**: Rate 1-10 for Done or Dropped statuses (Backlog skips rating)
 - **💬 Comment**: Optional follow-up comment after rating
-- **🤖 AI analysis** (JSON Schema mode): Cloudflare Workers AI classifies text input and can add summaries/tags for saved links
 - **🔗 Provider enrichment**: GitHub links get repository metadata via GitHub API; YouTube links use oEmbed; generic pages can use HTML title/meta extraction
 - **💾 GitHub integration**: Saves to `<repository>/inbox/pending/` as flat YAML files
 - **🖼️ Media archiving**: Photos and PDFs are archived to `<repository>/inbox/assets/` when possible, with metadata in inbox/pending/
@@ -30,7 +29,6 @@ Telegram → Cloudflare Worker
   ├── Cloudflare KV (state + dedup, 30 min TTL)
   ├── Detector (URL → provider)
   ├── Resolver (GitHub API, YouTube oEmbed, generic HTML metadata)
-  ├── Cloudflare AI (JSON Schema mode, temperature 0.15) — text classification + link summary/tags
   └── GitHub API → <repository>/inbox/
           ├── pending/        (YAML items + reply files)
           ├── assets/         (photos/PDFs)
@@ -49,7 +47,6 @@ Telegram → Cloudflare Worker
     ├── app.rs          # Webhook handler + state machine
     ├── telegram.rs     # Telegram API types + service
     ├── github.rs       # GitHub commit to inbox/pending/ + inbox/assets/ + inbox/logs/ + reply files
-    ├── ai.rs           # Cloudflare Workers AI (JSON Schema mode)
     ├── detector.rs     # URL → provider
     ├── resolver.rs     # Provider/web metadata resolvers
     ├── parser.rs       # Slugify, filename generation
@@ -86,8 +83,6 @@ npx wrangler secret put GITHUB_REPO
 # Optional: disable GitHub log writes entirely
 # npx wrangler secret put LOG_TO_FILE
 # Set value to false to disable the shared daily log file
-# Optional: npx wrangler secret put AI_MODEL
-# Default: @cf/openai/gpt-oss-120b
 ```
 
 ### 4. Deploy
@@ -122,20 +117,16 @@ Bot: ✅ Saved:
 
 All URLs are saved as `Link` type — no status or rating prompt, just an optional comment. GitHub links are enriched with repository metadata via GitHub API; YouTube links, articles, and any other URLs use the same flow.
 
-### Send a title (text input — AI classifies, user confirms)
+### Send a title (text input — user picks type)
 
 ```
 User: Clean Architecture
-Bot: 🤖 Looks like: 📚 Book
-     👤 Robert C. Martin
-     📅 2017
-     Confirm or change type?
-     [✅ Confirm]
+Bot: What type?
      [📚 Book] [🎬 Movie]
      [📺 Series] [🎌 Anime]
      [📝 Note]  [❌ Cancel]
 
-User: ✅ Confirm
+User: 📚 Book
 Bot: 📚 Status?
      [📋 Backlog] [✅ Done]
      [❌ Dropped] [❌ Cancel]
@@ -150,8 +141,6 @@ User: ⏭ Skip
 Bot: ✅ Saved:
      inbox/pending/2026-07-08_1530_clean-architecture.yaml
 ```
-
-If AI misidentifies the type — user just taps the correct button instead of Confirm.
 
 ### Send a YouTube link
 
@@ -277,11 +266,10 @@ When a media item is previewed or saved to YAML, the selected status is rendered
 ## 🔍 How each input type is processed
 
 ### URLs (any)
-Bot saves as `Link` type. It resolves provider metadata where possible, can ask AI for a short summary and topic tags, then asks only for an optional comment. URL classification itself is rule-based.
+Bot saves as `Link` type. It resolves provider metadata where possible (GitHub API, YouTube oEmbed, HTML title/meta extraction), then asks only for an optional comment. URL classification itself is rule-based.
 
 ### Text messages
-AI classifies the text as one of: book, movie, series, anime, or note.  
-User can confirm the suggestion or pick a different type.  
+User picks the type manually: book, movie, series, anime, or note.  
 - Book/Movie/Series/Anime → full status → (season) → rating → comment flow  
 - Note → saved immediately
 
@@ -319,20 +307,11 @@ The log entry includes:
 
 Logs are best-effort, but the current implementation keeps webhook events, normal bot logs, and error blocks in one shared day file to make debugging easier.
 
-### AI Analysis Details
-
-- **JSON Schema mode**: Workers AI `response_format` with `json_schema` requests structured output; the bot also has a defensive JSON extraction fallback for models that return text
-- **Model**: `@cf/openai/gpt-oss-120b` by default (configurable via `AI_MODEL`)
-- **Temperature**: 0.15 (low — deterministic classification, not creative generation)
-- **Classifies into**: `type` (enum: book/movie/series/anime/note), `title` (required), `author`, `year`, `description`, `tags`
-- **Human-in-the-loop**: AI result is shown as a suggestion — user confirms or changes type before proceeding
-- **URLs are rule-detected first**: Links are not AI-classified, but resolved link metadata can be sent to AI for summary and topic tags
-
 ### Link Enrichment
 
 When a user sends a GitHub link, the bot fetches repository metadata via GitHub API:
 - `title` → actual repository name (not URL slug)
-- `description` → repo description used for the chat preview and AI summary context
+- `description` → repo description used for the chat preview
 - `language` → primary programming language
 - `stars` → star count
 - `tags` → repository topics

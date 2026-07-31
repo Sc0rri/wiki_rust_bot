@@ -17,8 +17,5 @@ id = "0ac8768fc0a04bd29a6338bbfd623be1"
 binding = "WIKI_QUEUE"
 queue_name = "wiki-inbox-queue"
 
-[ai]
-binding = "AI"
-
 [observability]
 enabled = false
