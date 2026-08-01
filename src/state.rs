@@ -63,15 +63,6 @@ pub struct DetectedResource {
 }
 
 /// Full pending item with rich metadata
-/// Result of AI content analysis for a link — deliberately a struct, not a
-/// tuple, so fields like entities/difficulty/reading_time can be added later
-/// without changing enrich_link's call signature.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LinkAnalysis {
-    pub summary: String,
-    pub topics: Vec<String>,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PendingItem {
     pub id: String,
@@ -86,12 +77,10 @@ pub struct PendingItem {
     /// external clarification script knows where to send follow-up questions.
     pub chat_id: i64,
     /// The original, unprocessed text this item came from — the raw message
-    /// text (before AI picked a title), or a photo/PDF caption. Kept
-    /// separate from `title` (which can be AI-derived or a generic
-    /// placeholder for links) and `comment` (a follow-up the user adds
-    /// interactively), so the source material survives even if the derived
-    /// title turns out wrong or generic — useful for reprocessing later
-    /// with a better model, without needing to go back to Telegram.
+    /// text, or a photo/PDF caption. Kept separate from `title` (which can
+    /// be a generic placeholder for links) and `comment` (a follow-up the
+    /// user adds interactively), so the source material survives even if
+    /// the derived title turns out wrong or generic.
     pub raw_text: Option<String>,
     pub author: Option<String>,
     pub language: Option<String>,
@@ -176,9 +165,6 @@ pub enum UserState {
     AwaitingComment {
         item: PendingItem,
     },
-    AwaitingAiConfirm {
-        item: PendingItem,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -189,7 +175,6 @@ pub enum TextTransition {
     SetSeason(Option<u32>),
     SetRating(u8),
     SetComment(String),
-    ConfirmAi,
     ProcessFresh,
 }
 
@@ -341,27 +326,6 @@ impl UserState {
                     TextTransition::SetComment(String::new())
                 } else {
                     TextTransition::SetComment(text.to_string())
-                }
-            }
-            Self::AwaitingAiConfirm { .. } => {
-                if lower == "confirm"
-                    || lower == "✅ confirm"
-                    || lower == "да"
-                    || lower == "подтвердить"
-                {
-                    TextTransition::ConfirmAi
-                } else if lower.contains("book") || lower.contains("книг") {
-                    TextTransition::SelectType(KnowledgeType::Book)
-                } else if lower.contains("movie") || lower.contains("фильм") {
-                    TextTransition::SelectType(KnowledgeType::Movie)
-                } else if lower.contains("series") || lower.contains("сериал") {
-                    TextTransition::SelectType(KnowledgeType::Series)
-                } else if lower.contains("anime") || lower.contains("аним") {
-                    TextTransition::SelectType(KnowledgeType::Anime)
-                } else if lower.contains("note") || lower.contains("заметк") {
-                    TextTransition::SelectType(KnowledgeType::Note)
-                } else {
-                    TextTransition::ProcessFresh
                 }
             }
             Self::None => TextTransition::ProcessFresh,

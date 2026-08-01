@@ -209,28 +209,6 @@ impl TelegramService {
         })
     }
 
-    pub fn confirm_ai_keyboard() -> serde_json::Value {
-        serde_json::json!({
-            "keyboard": [
-                [{"text": "✅ Confirm"}],
-                [
-                    {"text": BTN_BOOK},
-                    {"text": BTN_MOVIE}
-                ],
-                [
-                    {"text": BTN_SERIES},
-                    {"text": BTN_ANIME}
-                ],
-                [
-                    {"text": BTN_NOTE},
-                    {"text": BTN_CANCEL}
-                ]
-            ],
-            "one_time_keyboard": true,
-            "resize_keyboard": true
-        })
-    }
-
     pub fn skip_keyboard() -> serde_json::Value {
         serde_json::json!({
             "keyboard": [

@@ -1,4 +1,3 @@
-use crate::ai::AiService;
 use crate::dedup::DedupService;
 use crate::detector::Detector;
 use crate::github::GitHubService;
@@ -565,13 +564,6 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
                 )
                 .await?;
             }
-            UserState::AwaitingAiConfirm { mut item } => {
-                item.knowledge_type = kt.clone();
-                proceed_with_item(
-                    env, &bot_token, &kv, &dedup_kv, &state_key, chat_id, kt, item,
-                )
-                .await?;
-            }
             _ => {}
         },
         TextTransition::SelectStatus(status) => {
@@ -609,15 +601,6 @@ async fn handle_text(env: Env, chat_id: i64, text: String) -> Result<()> {
                 };
                 delete_state(&kv, &state_key, chat_id).await?;
                 save_and_finish(env, &bot_token, &dedup_kv, chat_id, item).await?;
-            }
-        }
-        TextTransition::ConfirmAi => {
-            if let UserState::AwaitingAiConfirm { item } = state {
-                let kt = item.knowledge_type.clone();
-                proceed_with_item(
-                    env, &bot_token, &kv, &dedup_kv, &state_key, chat_id, kt, item,
-                )
-                .await?;
             }
         }
         TextTransition::ProcessFresh => {
@@ -688,7 +671,7 @@ async fn proceed_after_season(
     Ok(())
 }
 
-/// Shared continuation after a type is known (from manual pick or AI confirm).
+/// Shared continuation after a type is known (from manual pick).
 /// This path only ever produces Book/Movie/Series/Anime/Note (Link is built
 /// and handled separately in process_fresh) — and a text-only Note has
 /// nothing worth commenting on, so it saves immediately. Media types go on
@@ -805,32 +788,6 @@ async fn process_fresh(
             }
         }
 
-        // Now that we have a title (and maybe a description) from the
-        // mechanical resolution above, ask AI for what it's actually good
-        // for: a short summary and topic tags — not "what type is this",
-        // which is already known (it's a Link).
-        match AiService::enrich_link(
-            &env,
-            &item.title,
-            item.description.as_deref(),
-            &detected.url,
-        )
-        .await
-        {
-            Ok(Some(analysis)) => {
-                item.description = Some(analysis.summary);
-                for topic in analysis.topics {
-                    if !item.tags.contains(&topic) {
-                        item.tags.push(topic);
-                    }
-                }
-            }
-            Ok(None) => {}
-            Err(e) => {
-                log_event!("warn", "ai.enrich_link.failed", "error={:?}", e);
-            }
-        }
-
         // Links skip type/status entirely — show what was found (including
         // GitHub stars/language, so the enrichment is actually visible in
         // chat and not just in the committed file) and ask for a comment.
@@ -846,40 +803,21 @@ async fn process_fresh(
         )
         .await?;
     } else {
-        // Plain text: let AI decide if it's a Book/Movie/Series/Anime — anything
-        // else (or an AI failure) falls back to a manual pick from those four + Note.
-        match AiService::analyze_content(&env, text, chat_id).await {
-            Ok(Some(mut item)) => {
-                item.source = "telegram".to_string();
-                let preview = AiService::format_preview(&item);
-                let state = UserState::AwaitingAiConfirm { item };
-                let state_kv = env.kv("STATE_STORE")?;
-                save_state(&state_kv, &format!("{}_state", chat_id), &state).await?;
-                TelegramService::send_message(
-                    bot_token,
-                    chat_id,
-                    &preview,
-                    Some(TelegramService::confirm_ai_keyboard()),
-                )
-                .await?;
-            }
-            _ => {
-                TelegramService::send_message(
-                    bot_token,
-                    chat_id,
-                    "Couldn't detect type automatically.\n\nWhat type?",
-                    Some(TelegramService::type_keyboard()),
-                )
-                .await?;
-                let kv = env.kv("STATE_STORE")?;
-                let state = UserState::AwaitingType {
-                    raw_text: text.to_string(),
-                    detected: None,
-                    media_file_id: None,
-                };
-                save_state(&kv, &format!("{}_state", chat_id), &state).await?;
-            }
-        }
+        // Plain text: ask the user to pick a type manually.
+        TelegramService::send_message(
+            bot_token,
+            chat_id,
+            "What type?",
+            Some(TelegramService::type_keyboard()),
+        )
+        .await?;
+        let kv = env.kv("STATE_STORE")?;
+        let state = UserState::AwaitingType {
+            raw_text: text.to_string(),
+            detected: None,
+            media_file_id: None,
+        };
+        save_state(&kv, &format!("{}_state", chat_id), &state).await?;
     }
     Ok(())
 }
@@ -1025,7 +963,6 @@ fn state_name(state: &UserState) -> &'static str {
         UserState::AwaitingSeason { .. } => "awaiting_season",
         UserState::AwaitingRating { .. } => "awaiting_rating",
         UserState::AwaitingComment { .. } => "awaiting_comment",
-        UserState::AwaitingAiConfirm { .. } => "awaiting_ai_confirm",
     }
 }
 
