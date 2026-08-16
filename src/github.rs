@@ -170,9 +170,15 @@ impl GitHubService {
         });
 
         let headers = Headers::new();
+        headers.set(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        )?;
+        headers.set("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")?;
+        headers.set("Accept-Encoding", "gzip, deflate, br")?;
+        headers.set("Cache-Control", "no-cache")?;
         headers.set("Authorization", &format!("Bearer {}", token))?;
         headers.set("Content-Type", "application/json")?;
-        headers.set("User-Agent", "wiki-rust-bot")?;
 
         let mut req_init = RequestInit::new();
         req_init.with_method(Method::Put);
@@ -240,8 +246,14 @@ impl GitHubService {
         let url = format!("https://api.github.com/repos/{}/contents/{}", repo, path);
 
         let headers = Headers::new();
+        headers.set(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        )?;
+        headers.set("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")?;
+        headers.set("Accept-Encoding", "gzip, deflate, br")?;
+        headers.set("Cache-Control", "no-cache")?;
         headers.set("Authorization", &format!("Bearer {}", token))?;
-        headers.set("User-Agent", "wiki-rust-bot")?;
         headers.set("Accept", "application/vnd.github+json")?;
 
         let mut req_init = RequestInit::new();
@@ -302,8 +314,14 @@ impl GitHubService {
         for attempt in 0..3 {
             // Try to GET existing file content (SHA + base64 body).
             let get_headers = Headers::new();
+            let _ = get_headers.set(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            );
+            let _ = get_headers.set("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8");
+            let _ = get_headers.set("Accept-Encoding", "gzip, deflate, br");
+            let _ = get_headers.set("Cache-Control", "no-cache");
             let _ = get_headers.set("Authorization", &format!("Bearer {}", token));
-            let _ = get_headers.set("User-Agent", "wiki-rust-bot");
 
             let mut get_req_init = RequestInit::new();
             get_req_init.with_method(Method::Get);
@@ -358,9 +376,15 @@ impl GitHubService {
             }
 
             let put_headers = Headers::new();
+            let _ = put_headers.set(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            );
+            let _ = put_headers.set("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8");
+            let _ = put_headers.set("Accept-Encoding", "gzip, deflate, br");
+            let _ = put_headers.set("Cache-Control", "no-cache");
             let _ = put_headers.set("Authorization", &format!("Bearer {}", token));
             let _ = put_headers.set("Content-Type", "application/json");
-            let _ = put_headers.set("User-Agent", "wiki-rust-bot");
 
             let mut put_req_init = RequestInit::new();
             put_req_init.with_method(Method::Put);
@@ -412,9 +436,15 @@ impl GitHubService {
             }
 
             let headers = Headers::new();
+            headers.set(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            )?;
+            headers.set("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")?;
+            headers.set("Accept-Encoding", "gzip, deflate, br")?;
+            headers.set("Cache-Control", "no-cache")?;
             headers.set("Authorization", &format!("Bearer {}", token))?;
             headers.set("Content-Type", "application/json")?;
-            headers.set("User-Agent", "wiki-rust-bot")?;
 
             let mut req_init = RequestInit::new();
             req_init.with_method(Method::Put);
@@ -481,9 +511,15 @@ impl GitHubService {
         }
 
         let headers = Headers::new();
+        headers.set(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        )?;
+        headers.set("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")?;
+        headers.set("Accept-Encoding", "gzip, deflate, br")?;
+        headers.set("Cache-Control", "no-cache")?;
         headers.set("Authorization", &format!("Bearer {}", token))?;
         headers.set("Content-Type", "application/json")?;
-        headers.set("User-Agent", "wiki-rust-bot")?;
 
         let mut req_init = RequestInit::new();
         req_init.with_method(Method::Put);
@@ -510,8 +546,14 @@ impl GitHubService {
         let url = format!("https://api.github.com/repos/{}/contents/{}", repo, path);
 
         let headers = Headers::new();
+        headers.set(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        )?;
+        headers.set("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")?;
+        headers.set("Accept-Encoding", "gzip, deflate, br")?;
+        headers.set("Cache-Control", "no-cache")?;
         headers.set("Authorization", &format!("Bearer {}", token))?;
-        headers.set("User-Agent", "wiki-rust-bot")?;
         headers.set("Accept", "application/vnd.github+json")?;
 
         let mut req_init = RequestInit::new();
@@ -662,8 +704,14 @@ impl GitHubService {
 
     async fn github_get(token: &str, url: &str) -> Result<serde_json::Value> {
         let headers = Headers::new();
+        headers.set(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        )?;
+        headers.set("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")?;
+        headers.set("Accept-Encoding", "gzip, deflate, br")?;
+        headers.set("Cache-Control", "no-cache")?;
         headers.set("Authorization", &format!("Bearer {}", token))?;
-        headers.set("User-Agent", "wiki-rust-bot")?;
         headers.set("Accept", "application/vnd.github+json")?;
 
         let mut req_init = RequestInit::new();
@@ -701,9 +749,15 @@ impl GitHubService {
         payload: &serde_json::Value,
     ) -> Result<serde_json::Value> {
         let headers = Headers::new();
+        headers.set(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        )?;
+        headers.set("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")?;
+        headers.set("Accept-Encoding", "gzip, deflate, br")?;
+        headers.set("Cache-Control", "no-cache")?;
         headers.set("Authorization", &format!("Bearer {}", token))?;
         headers.set("Content-Type", "application/json")?;
-        headers.set("User-Agent", "wiki-rust-bot")?;
         headers.set("Accept", "application/vnd.github+json")?;
 
         let mut req_init = RequestInit::new();
@@ -743,9 +797,15 @@ impl GitHubService {
         payload: &serde_json::Value,
     ) -> Result<serde_json::Value> {
         let headers = Headers::new();
+        headers.set(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        )?;
+        headers.set("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")?;
+        headers.set("Accept-Encoding", "gzip, deflate, br")?;
+        headers.set("Cache-Control", "no-cache")?;
         headers.set("Authorization", &format!("Bearer {}", token))?;
         headers.set("Content-Type", "application/json")?;
-        headers.set("User-Agent", "wiki-rust-bot")?;
         headers.set("Accept", "application/vnd.github+json")?;
 
         let mut req_init = RequestInit::new();

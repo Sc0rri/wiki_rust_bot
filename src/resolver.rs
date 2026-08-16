@@ -23,7 +23,13 @@ impl Resolver {
         let url = format!("https://api.github.com/repos/{}", owner_repo);
 
         let headers = Headers::new();
-        headers.set("User-Agent", "wiki-rust-bot")?;
+        headers.set(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        )?;
+        headers.set("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8")?;
+        headers.set("Accept-Encoding", "gzip, deflate, br")?;
+        headers.set("Cache-Control", "no-cache")?;
         headers.set("Accept", "application/vnd.github.v3+json")?;
         if !token.is_empty() {
             headers.set("Authorization", &format!("Bearer {}", token))?;
@@ -180,10 +186,32 @@ impl Resolver {
         Ok(title.map(|t| (t, description)))
     }
 
-    /// Shared User-Agent for all outbound metadata fetches.
+    /// Shared headers for outbound metadata fetches.
+    ///
+    /// Some public sites (notably DOU) reject unknown bots with 403s even for
+    /// ordinary GET requests. A browser-like profile reduces that block rate
+    /// without changing the resolver logic itself.
+    fn browser_metadata_headers() -> [(&'static str, &'static str); 5] {
+        [
+            (
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            ),
+            (
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            ),
+            ("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.8"),
+            ("Accept-Encoding", "gzip, deflate, br"),
+            ("Cache-Control", "no-cache"),
+        ]
+    }
+
     fn knowledge_compiler_headers() -> Result<Headers> {
         let headers = Headers::new();
-        headers.set("User-Agent", "knowledge-compiler/1.0")?;
+        for (name, value) in Self::browser_metadata_headers() {
+            headers.set(name, value)?;
+        }
         Ok(headers)
     }
 
@@ -389,5 +417,31 @@ mod tests {
         let cut = Resolver::floor_char_boundary_len(&text, 80_000);
         assert!(text.is_char_boundary(cut));
         assert_eq!((text[..cut].len() % 2), 0);
+    }
+
+    #[test]
+    fn knowledge_compiler_headers_should_include_browser_like_headers() {
+        let headers = Resolver::browser_metadata_headers();
+
+        let user_agent = headers
+            .iter()
+            .find(|(name, _)| *name == "User-Agent")
+            .map(|(_, value)| *value)
+            .unwrap();
+        assert!(user_agent.to_lowercase().contains("mozilla"));
+
+        let accept = headers
+            .iter()
+            .find(|(name, _)| *name == "Accept")
+            .map(|(_, value)| *value)
+            .unwrap();
+        assert!(accept.to_lowercase().contains("text/html"));
+
+        let accept_lang = headers
+            .iter()
+            .find(|(name, _)| *name == "Accept-Language")
+            .map(|(_, value)| *value)
+            .unwrap();
+        assert!(accept_lang.to_lowercase().contains("ru"));
     }
 }
