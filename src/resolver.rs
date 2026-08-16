@@ -105,6 +105,7 @@ impl Resolver {
 
         let mut req_init = RequestInit::new();
         req_init.with_method(Method::Get);
+        req_init.with_headers(Self::knowledge_compiler_headers()?);
         let req = Request::new_with_init(&oembed_url, &req_init)?;
         let mut resp = Fetch::Request(req).send().await?;
 
@@ -129,9 +130,15 @@ impl Resolver {
     /// <title> and a meta description. No AI involved — this is mechanical
     /// extraction, which is both cheaper and more reliable than asking a
     /// model to guess a page's title from a URL alone.
+    ///
+    /// This is the authoritative metadata source for links: it runs for every
+    /// provider without a dedicated resolver (generic pages, forums, Habr,
+    /// arXiv, Wikipedia, ...), and the URL-derived `guess_title` is only used
+    /// by the caller if this fetch fails or returns nothing.
     pub async fn resolve_web_title(url: &str) -> Result<Option<(String, Option<String>)>> {
         let mut req_init = RequestInit::new();
         req_init.with_method(Method::Get);
+        req_init.with_headers(Self::knowledge_compiler_headers()?);
         let req = Request::new_with_init(url, &req_init)?;
         let mut resp = match Fetch::Request(req).send().await {
             Ok(r) => r,
@@ -147,18 +154,36 @@ impl Resolver {
 
         let html = resp.text().await?;
         // Title/description are always near the top of <head> — no need to
-        // scan a whole large page.
-        let snippet_len = html.len().min(80_000);
+        // scan a whole large page. Cut on a UTF-8 char boundary so slicing
+        // a large multi-byte page (e.g. 134KB of Cyrillic dou.ua) can't panic.
+        let snippet_len = Self::floor_char_boundary_len(&html, 80_000);
         let snippet = &html[..snippet_len];
 
         let title = Self::extract_tag_content(snippet, "title")
             .map(|t| Self::decode_html_entities(t.trim()))
-            .filter(|t| !t.is_empty());
+            .filter(|t| !t.is_empty())
+            .or_else(|| Self::extract_open_graph_title(snippet));
         let description = Self::extract_meta_description(snippet)
             .map(|d| Self::decode_html_entities(d.trim()))
             .filter(|d| !d.is_empty());
 
         Ok(title.map(|t| (t, description)))
+    }
+
+    /// Shared User-Agent for all outbound metadata fetches.
+    fn knowledge_compiler_headers() -> Result<Headers> {
+        let headers = Headers::new();
+        headers.set("User-Agent", "knowledge-compiler/1.0")?;
+        Ok(headers)
+    }
+
+    /// Largest cut point <= `max` that sits on a UTF-8 char boundary.
+    fn floor_char_boundary_len(text: &str, max: usize) -> usize {
+        let mut end = max.min(text.len());
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        end
     }
 
     fn extract_tag_content(html: &str, tag: &str) -> Option<String> {
@@ -172,22 +197,68 @@ impl Resolver {
     }
 
     fn extract_meta_description(html: &str) -> Option<String> {
+        Self::extract_meta_value(html, "name", "description")
+            .or_else(|| Self::extract_meta_value(html, "property", "og:description"))
+            .or_else(|| Self::extract_meta_value(html, "name", "og:description"))
+    }
+
+    fn extract_open_graph_title(html: &str) -> Option<String> {
+        Self::extract_meta_value(html, "property", "og:title")
+            .or_else(|| Self::extract_meta_value(html, "name", "og:title"))
+            .or_else(|| Self::extract_meta_value(html, "property", "twitter:title"))
+    }
+
+    /// Find the first `<meta attr="value" ...>` tag (case-insensitive) and return
+    /// its `content` attribute. Handles double-quoted, single-quoted and bare
+    /// (unquoted) content values, regardless of attribute order.
+    fn extract_meta_value(html: &str, attr: &str, value: &str) -> Option<String> {
         let lower = html.to_lowercase();
-        for marker in ["name=\"description\"", "property=\"og:description\""] {
-            if let Some(pos) = lower.find(marker) {
-                let tag_start = lower[..pos].rfind("<meta")?;
-                let tag_end = lower[pos..].find('>').map(|e| e + pos)?;
-                let tag = &html[tag_start..tag_end];
-                let tag_lower = tag.to_lowercase();
-                if let Some(c_pos) = tag_lower.find("content=\"") {
-                    let content_start = c_pos + "content=\"".len();
-                    if let Some(end_rel) = tag[content_start..].find('"') {
-                        return Some(tag[content_start..content_start + end_rel].to_string());
+        let attr_l = attr.to_lowercase();
+        let value_l = value.to_lowercase();
+        let pair_dq = format!("{}=\"{}\"", attr_l, value_l);
+        let pair_sq = format!("{}='{}'", attr_l, value_l);
+
+        let mut search_from = 0usize;
+        while let Some(rel) = lower[search_from..].find("<meta") {
+            let tag_start = search_from + rel;
+            let tag_end_rel = lower[tag_start..].find('>')?;
+            let tag = &html[tag_start..tag_start + tag_end_rel];
+            let tag_lower = tag.to_lowercase();
+            if tag_lower.contains(&pair_dq) || tag_lower.contains(&pair_sq) {
+                if let Some(content) = Self::extract_meta_content(tag) {
+                    if !content.is_empty() {
+                        return Some(content);
                     }
                 }
             }
+            search_from = tag_start + tag_end_rel;
         }
         None
+    }
+
+    fn extract_meta_content(tag: &str) -> Option<String> {
+        let tag_lower = tag.to_lowercase();
+        let c_pos = tag_lower.find("content")?;
+        let rest = tag[c_pos + "content".len()..].trim_start();
+        let rest = rest.strip_prefix('=')?.trim_start();
+        match rest.chars().next()? {
+            '"' => {
+                let end = rest[1..].find('"')?;
+                Some(rest[1..1 + end].to_string())
+            }
+            '\'' => {
+                let end = rest[1..].find('\'')?;
+                Some(rest[1..1 + end].to_string())
+            }
+            _ => {
+                // Bare value: runs until whitespace or '>' (first char is already
+                // a non-quote, non-whitespace char after trimming).
+                let end = rest
+                    .find(|ch: char| ch.is_whitespace() || ch == '>')
+                    .unwrap_or(rest.len());
+                Some(rest[..end].to_string())
+            }
+        }
     }
 
     fn decode_html_entities(s: &str) -> String {
@@ -249,5 +320,33 @@ mod tests {
             Resolver::decode_html_entities("&quot;quoted&quot;"),
             "\"quoted\""
         );
+    }
+#[test]
+    fn extract_meta_description_should_handle_single_quoted_content() {
+        let html = r#"<meta name='description' content='Сайт про LLM. Зберігає знання'>"#;
+        assert_eq!(
+            Resolver::extract_meta_description(html),
+            Some("Сайт про LLM. Зберігає знання".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_open_graph_title_should_find_og_title() {
+        let html = r#"<meta property="og:title" content="Від RAG до LLM Wiki">"#;
+        assert_eq!(
+            Resolver::extract_open_graph_title(html),
+            Some("Від RAG до LLM Wiki".to_string())
+        );
+    }
+
+    #[test]
+    fn floor_char_boundary_len_should_not_split_utf8() {
+        // 40_000 Cyrillic 'і' (2 bytes each) == 80_000 bytes, right at the cap;
+        // the cut point must still land on a char boundary so a later slice of a
+        // large multi-byte page can't panic.
+        let text = "і".repeat(40_000);
+        let cut = Resolver::floor_char_boundary_len(&text, 80_000);
+        assert!(text.is_char_boundary(cut));
+        assert_eq!((text[..cut].len() % 2), 0);
     }
 }

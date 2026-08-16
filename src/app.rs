@@ -766,10 +766,11 @@ async fn process_fresh(
                     }
                 }
             }
-        } else if detected.title.is_none() {
-            // Generic fallback for any other provider whose title couldn't be
-            // guessed from the URL alone (arbitrary web pages, forum threads,
-            // etc.) — fetch the page and pull <title>/description mechanically.
+        } else {
+            // All remaining providers (generic web pages, forum threads,
+            // Habr/arXiv/Wikipedia, etc.): always pull the real <title> and
+            // meta description from the page. The URL-derived guess_title is
+            // only a fallback if the fetch fails or returns nothing.
             if let Some(ref url) = item.url {
                 match Resolver::resolve_web_title(url).await {
                     Ok(Some((title, description))) => {
