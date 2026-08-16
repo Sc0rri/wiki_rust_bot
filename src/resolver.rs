@@ -158,13 +158,13 @@ impl Resolver {
             Ok(r) => r,
             Err(e) => {
                 crate::log_event!("warn", "resolver.web.fetch_failed", "error={:?}", e);
-                return Ok(None);
+                return Ok(Self::fallback_web_title(url).map(|title| (title, None)));
             }
         };
 
         if resp.status_code() != 200 {
             crate::log_event!("warn", "resolver.web.bad_status", "url={} status={}", url, resp.status_code());
-            return Ok(None);
+            return Ok(Self::fallback_web_title(url).map(|title| (title, None)));
         }
 
         let html = resp.text().await?;
@@ -181,6 +181,9 @@ impl Resolver {
 
         if title.is_none() {
             crate::log_event!("warn", "resolver.web.no_title_found", "url={} html_bytes={}", url, html.len());
+            if let Some(fallback) = Self::fallback_web_title(url) {
+                return Ok(Some((fallback, description)));
+            }
         }
 
         Ok(title.map(|t| (t, description)))
@@ -189,8 +192,9 @@ impl Resolver {
     /// Shared headers for outbound metadata fetches.
     ///
     /// Some public sites (notably DOU) reject unknown bots with 403s even for
-    /// ordinary GET requests. A browser-like profile reduces that block rate
-    /// without changing the resolver logic itself.
+    /// ordinary GET requests. A browser-like profile reduces that block rate,
+    /// but we still degrade gracefully to a URL-based fallback when a site blocks
+    /// the Worker runtime.
     fn browser_metadata_headers() -> [(&'static str, &'static str); 5] {
         [
             (
@@ -213,6 +217,44 @@ impl Resolver {
             headers.set(name, value)?;
         }
         Ok(headers)
+    }
+
+    /// Fallback title for sites that deny Worker fetches (for example DOU).
+    /// Produces a human-readable slug from the URL path instead of failing the
+    /// whole metadata resolution flow.
+    fn fallback_web_title(url: &str) -> Option<String> {
+        let clean = url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .trim_start_matches("www.")
+            .split(['?', '#'])
+            .next()
+            .unwrap_or_default();
+
+        let segments: Vec<&str> = clean
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if segments.is_empty() {
+            return None;
+        }
+
+        let last = *segments.last()?;
+        let normalized = last.replace('-', " ").replace('_', " ").trim().to_string();
+
+        if normalized.is_empty() {
+            return None;
+        }
+
+        if clean.contains("dou.ua") && segments.len() >= 3 && segments[segments.len() - 2] == "topic" {
+            let topic_id = segments.last().unwrap_or(&"");
+            if topic_id.chars().all(|c| c.is_ascii_digit()) {
+                return Some(format!("DOU topic {}", topic_id));
+            }
+        }
+
+        Some(normalized)
     }
 
     /// Largest cut point <= `max` that sits on a UTF-8 char boundary.
@@ -443,5 +485,11 @@ mod tests {
             .map(|(_, value)| *value)
             .unwrap();
         assert!(accept_lang.to_lowercase().contains("ru"));
+    }
+
+    #[test]
+    fn fallback_web_title_should_generates_dou_topic_title_for_blocked_pages() {
+        let url = "https://dou.ua/forums/topic/60484/";
+        assert_eq!(Resolver::fallback_web_title(url), Some("DOU topic 60484".to_string()));
     }
 }
