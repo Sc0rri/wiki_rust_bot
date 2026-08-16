@@ -20,23 +20,27 @@ pub const BTN_DROPPED: &str = "❌ Dropped";
 pub const BTN_CANCEL: &str = "❌ Cancel";
 pub const BTN_SKIP: &str = "⏭ Skip";
 
+/// An incoming Telegram update — either a message or a callback query.
 #[derive(Deserialize, Serialize, Debug)]
 pub struct Update {
     pub message: Option<Message>,
     pub callback_query: Option<CallbackQuery>,
 }
 
+/// A Telegram user (sender).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct User {
     pub id: i64,
     pub username: Option<String>,
 }
 
+/// A Telegram chat.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Chat {
     pub id: i64,
 }
 
+/// A photo object from Telegram (one of several size variants).
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct PhotoSize {
     pub file_id: String,
@@ -46,6 +50,7 @@ pub struct PhotoSize {
     pub file_size: Option<i64>,
 }
 
+/// A Telegram message — possibly with text, caption, photo, or document.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Message {
     pub text: Option<String>,
@@ -63,6 +68,7 @@ pub struct Message {
     pub reply_to_message: Option<Box<Message>>,
 }
 
+/// A document/file object from Telegram.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Document {
     pub file_id: String,
@@ -70,6 +76,7 @@ pub struct Document {
     pub mime_type: Option<String>,
 }
 
+/// A callback query from an inline keyboard button press.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct CallbackQuery {
     pub id: String,
@@ -78,8 +85,11 @@ pub struct CallbackQuery {
     pub data: Option<String>,
 }
 
+/// Service for interacting with the Telegram Bot API: sending messages,
+/// downloading files, and building reply keyboards.
 pub struct TelegramService;
 
+/// Truncates text to at most `limit` characters for use in log previews.
 fn preview_for_log(text: &str, limit: usize) -> String {
     let mut chars = text.chars();
     let mut out = String::new();
@@ -93,6 +103,7 @@ fn preview_for_log(text: &str, limit: usize) -> String {
 }
 
 impl TelegramService {
+    /// Sends a message via the Telegram Bot API with an optional reply keyboard.
     pub async fn send_message(
         bot_token: &str,
         chat_id: i64,
@@ -171,6 +182,8 @@ impl TelegramService {
         resp.bytes().await
     }
 
+    /// Returns a reply keyboard with the four media type buttons
+    /// (Book, Movie, Series, Anime) plus Cancel; used to choose the item type.
     pub fn type_keyboard() -> serde_json::Value {
         serde_json::json!({
             "keyboard": [
@@ -192,6 +205,8 @@ impl TelegramService {
         })
     }
 
+    /// Returns a reply keyboard with status buttons (Backlog, Done, Dropped)
+    /// plus Cancel; used for the media type status prompt.
     pub fn status_keyboard(_knowledge_type: &KnowledgeType) -> serde_json::Value {
         serde_json::json!({
             "keyboard": [
@@ -209,6 +224,8 @@ impl TelegramService {
         })
     }
 
+    /// Returns a reply keyboard with a Skip button and Cancel; used for
+    /// optional prompts (season, rating, comment) where the user may skip.
     pub fn skip_keyboard() -> serde_json::Value {
         serde_json::json!({
             "keyboard": [
@@ -220,6 +237,8 @@ impl TelegramService {
         })
     }
 
+    /// Returns the JSON payload to remove the reply keyboard
+    /// (Telegram's ReplyKeyboardRemove).
     pub fn remove_keyboard() -> serde_json::Value {
         serde_json::json!({
             "remove_keyboard": true

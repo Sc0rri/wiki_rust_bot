@@ -1,6 +1,13 @@
 use crate::state::{DetectedResource, ResourceProvider, ResourceType};
 
-/// Detects resource metadata from a URL. No business logic — pure detection.
+/// Detects resource metadata from a URL.
+///
+/// This is a pure, side-effect-free function that analyzes a URL and determines:
+/// - The resource provider (GitHub, YouTube, Goodreads, IMDb, arXiv, etc.)
+/// - A best-effort human-readable title guessed from the URL path segments
+/// - The resource type (always `Url` on this path)
+///
+/// No business logic — only detection. Enrichment happens later in the resolver.
 pub struct Detector;
 
 impl Detector {

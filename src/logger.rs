@@ -53,6 +53,10 @@ pub fn flush_logs() -> Vec<String> {
     take_logs()
 }
 
+/// Formats a log line with an ISO-8601 timestamp, level, name, and message.
+/// For error-level github./telegram. events, wraps the line in a visible
+/// `=== LEVEL name ===` header + separator block so errors stand out in the
+/// shared daily log file.
 pub fn format_log_line(
     level: impl AsRef<str>,
     name: impl AsRef<str>,
@@ -106,6 +110,15 @@ mod tests {
     }
 }
 
+/// Logging macro for structured event logging.
+///
+/// # Usage
+/// ```no_run
+/// log_event!("info", "module.event_name", "key={}", value);
+/// ```
+///
+/// Always prints the formatted line to the Worker console, and buffers it for
+/// the GitHub log file when file logging is enabled (see `LOG_TO_FILE`).
 #[macro_export]
 macro_rules! log_event {
     ($level:expr, $name:expr) => {

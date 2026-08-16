@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-/// How the resource was provided (input method)
+/// How the resource was provided (input method).
+/// - `Url`: submitted as a link
+/// - `Text`: plain text content
+/// - `Pdf`: a PDF document
+/// - `Image`: an image/photo
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceType {
@@ -44,6 +48,10 @@ pub enum KnowledgeType {
     Note,
 }
 
+/// The status of a media item in the reading/watching tracking flow.
+/// - `Backlog`: To-read / To-watch (queued)
+/// - `Done`: finished it (Read / Watched)
+/// - `Dropped`: abandoned
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ContentStatus {
@@ -97,6 +105,8 @@ pub struct PendingItem {
     pub asset_height: Option<i64>,
 }
 
+/// Removes invisible Unicode characters (zero-width spaces, BOM) from a string.
+/// These can be accidentally copied from formatted text and cause issues in YAML.
 fn strip_invisible_chars(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}'))
@@ -104,6 +114,10 @@ fn strip_invisible_chars(s: &str) -> String {
 }
 
 impl PendingItem {
+    /// Creates a new `PendingItem` with the given title, knowledge type, and chat_id.
+    /// Strips invisible characters from the title and generates a unique ID from
+    /// the current timestamp plus the first 20 chars of the (lowercased) title.
+    /// Defaults to `Backlog` status, empty tags, and `telegram` source.
     pub fn new(title: String, knowledge_type: KnowledgeType, chat_id: i64) -> Self {
         let title = strip_invisible_chars(&title);
         let now = chrono::Utc::now();

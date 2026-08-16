@@ -5,6 +5,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::time::Duration;
 use worker::*;
 
+/// Service for interacting with the GitHub Repository Contents + Git Data APIs.
+/// Handles committing binary assets, pending YAML items, reply files, and logs
+/// to a configured GitHub repository.
 pub struct GitHubService;
 
 impl GitHubService {
@@ -776,6 +779,9 @@ impl GitHubService {
         })
     }
 
+    /// Escapes a string for safe inclusion in a YAML double-quoted value.
+    /// Handles backslash, double-quote, carriage return, newline, and tab so
+    /// user-provided text can never break out of the quoted scalar.
     fn yaml_quote(s: &str) -> String {
         s.replace('\\', "\\\\")
             .replace('"', "\\\"")
@@ -784,6 +790,9 @@ impl GitHubService {
             .replace('\t', "\\t")
     }
 
+    /// Serializes a pending item into YAML frontmatter.
+    /// All string fields are escaped via `yaml_quote` to prevent YAML injection
+    /// or parse errors, and the output always ends with a trailing `---` separator.
     fn generate_yaml(item: &PendingItem) -> String {
         let mut yaml = String::new();
 

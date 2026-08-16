@@ -4,9 +4,14 @@ use worker::*;
 /// "title:"/"url:" prefix (6 bytes) plus a safety margin.
 const MAX_KEY_CONTENT_BYTES: usize = 500;
 
+/// Service for deduplication against Cloudflare KV.
+/// Marks and queries whether a title or URL has already been processed, so
+/// duplicate items are not committed to GitHub more than once.
 pub struct DedupService;
 
 impl DedupService {
+    /// Returns `true` if the given dedup key already exists in KV (i.e. the
+    /// corresponding title/URL has already been processed).
     pub async fn is_processed(kv: &kv::KvStore, key: &str) -> Result<bool> {
         match kv.get(key).text().await {
             Ok(Some(_)) => Ok(true),
@@ -18,6 +23,8 @@ impl DedupService {
         }
     }
 
+    /// Marks a dedup key as processed in KV, storing the value `"1"`.
+    /// Called after an item is successfully committed, so later duplicates are caught.
     pub async fn mark_processed(kv: &kv::KvStore, key: &str) -> Result<()> {
         match kv.put(key, "1")?.execute().await {
             Ok(_) => {
@@ -31,6 +38,8 @@ impl DedupService {
         }
     }
 
+    /// Builds a KV key for URL-based deduplication, truncating the URL to stay
+    /// within KV's 512-byte key limit.
     pub fn url_key(url: &str) -> String {
         format!(
             "url:{}",

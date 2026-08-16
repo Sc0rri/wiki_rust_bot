@@ -19,7 +19,9 @@ A Cloudflare Worker bot for building a personal wiki knowledge base. Send links,
 - **🕒 Draft timeout**: Draft state expires after 30 minutes; likely expired rating replies are reported instead of being reprocessed as new input
 - **💬 Clarification replies**: When an external script sends a clarifying question with `[ref:<id>]` marker, the user's reply is saved to `inbox/pending/<id>.reply.yaml`
 - **📝 Telegram chat_id**: Each saved item includes the Telegram `chat_id` so external scripts can send follow-up questions back to the right chat
-- **📋 Debug logging**: Telegram webhook events, incoming messages, and runtime errors are written to a single shared daily log at `inbox/logs/YYYY-MM-DD.log` for debugging
+- **📋 Debug logging**: Telegram webhook events, incoming messages, and runtime errors are buffered per chat and flushed to a shared daily log at `inbox/logs/YYYY-MM-DD.log` for debugging; logs can be disabled with `LOG_TO_FILE=false`
+- **🧵 KV log buffering**: unsaved logs are kept in `STATE_STORE` for 30 minutes (`{chat_id}_logbuf`) and merged back before the next save, `/cancel`, or `/clear`
+- **🧩 Clarification replies**: user replies to `[ref:<id>]` questions are saved as `inbox/pending/<id>.reply.yaml`
 - **🔒 YAML safety**: All string fields are properly escaped (backslash, quotes, newlines, tabs) to prevent YAML parsing issues
 
 ## 🏗 Architecture
@@ -84,6 +86,8 @@ npx wrangler secret put GITHUB_REPO
 # npx wrangler secret put LOG_TO_FILE
 # Set value to false to disable the shared daily log file
 ```
+
+`LOG_TO_FILE` is read as a string and defaults to `true` when undefined. In the runtime code, the app also accepts a regular env var value for compatibility with secret/env fallback handling.
 
 ### 4. Deploy
 
@@ -189,8 +193,9 @@ Forwarded messages are automatically saved as Notes without any prompts.
 | Command | Action |
 |---------|--------|
 | `/start` | Show welcome message |
-| `/cancel` | Cancel current draft and clear state |
-| `/clear` | Clear dedup store — treat all previously saved items as new again |
+| `/cancel` | Cancel the active draft, clear persisted state, and flush buffered logs to GitHub |
+| `/clear` | Clear the dedup KV namespace so all previous items are treated as new again and flush buffered logs to GitHub |
+| `/webhook` (GET) | Returns a simple health message; POST is the actual Telegram webhook endpoint |
 
 ## 📁 Saved File Format (YAML)
 
@@ -283,11 +288,14 @@ Automatically saved as `Note` with a `forwarded` tag — no prompts.
 
 ## 📋 Debug Logging
 
-Every Telegram request and bot event is written into a single daily file at `inbox/logs/YYYY-MM-DD.log` in the GitHub repository. The same file contains:
+Every Telegram request and bot event is buffered in memory first, then persisted to the `STATE_STORE` key `{chat_id}_logbuf` for up to 30 minutes. When the user saves an item, cancels a draft, or runs `/clear`, the buffered lines are merged and written to the shared daily file at `inbox/logs/YYYY-MM-DD.log` in the GitHub repository. The same file contains:
 - webhook receipts from Telegram
 - incoming message summaries
 - normal runtime logs
 - GitHub/Telegram errors rendered as readable blocks with separators
+- clarifying-reply activity and command outcomes
+
+This is best-effort behavior rather than a strict streaming log: the app prioritizes request isolation and avoids losing logs when the same chat continues across multiple webhook requests.
 
 Example:
 
@@ -321,8 +329,9 @@ YouTube links use the public oEmbed endpoint for title/author when available. Ot
 ### Deduplication Methods
 
 - **By title**: Case-insensitive exact match on the item title
-- **URL bookkeeping**: Saved link URLs are marked in KV and cleared by `/clear`, but duplicate checks currently use the title key
-- **Expired draft detection**: Numeric replies after state expiry are treated as likely stale ratings and reported to the user
+- **URL bookkeeping**: Saved link URLs are tracked in the dedup KV and `/clear` wipes the whole dedup namespace so everything is treated as new again
+- **Draft expiry**: Numeric replies after state expiry are treated as likely stale ratings and reported to the user
+- **Log persistence**: logs are also buffered in the state KV to survive between webhooks until the next save or command flush
 
 ### Supported URL Providers
 

@@ -79,6 +79,17 @@ async fn flush_logs_for_chat(env: &Env, ctx: &Context, chat_id: i64) {
     });
 }
 
+/// Handles an incoming Telegram webhook update.
+///
+/// Parses the JSON update, validates the sender's username against the allowed
+/// list, and routes the update through the bot's state machine. Supports:
+/// - Regular messages (text, photos, documents)
+/// - Callback queries (keyboard button presses)
+/// - Forwarded messages (routed to Notes)
+/// - Reply messages (clarification replies with `[ref:<id>]` markers)
+///
+/// State transitions are persisted to Cloudflare KV with a 30-minute TTL.
+/// Pending items are committed to GitHub after processing.
 pub async fn handle_update(env: Env, ctx: Context, update_raw: String) -> Result<()> {
     let update: Update = match serde_json::from_str(&update_raw) {
         Ok(update) => update,
@@ -892,6 +903,9 @@ async fn save_and_finish(
     Ok(())
 }
 
+/// Builds a human-readable preview string for a pending item.
+/// Shows emoji, title, URL, provider label, and available metadata
+/// (stars, status, season, rating, comment, tags) in a Telegram-friendly format.
 fn build_preview(item: &PendingItem) -> String {
     let mut preview = format!("{} {}\n", item.knowledge_type.emoji(), item.title);
     if let Some(ref url) = item.url {
@@ -934,6 +948,8 @@ fn build_preview(item: &PendingItem) -> String {
     preview
 }
 
+/// Loads the user state from KV for a given state key.
+/// Returns `UserState::None` if no state is stored.
 async fn load_state(kv: &worker::kv::KvStore, state_key: &str) -> Result<UserState> {
     let Some(s) = kv.get(state_key).text().await? else {
         return Ok(UserState::None);
@@ -941,6 +957,8 @@ async fn load_state(kv: &worker::kv::KvStore, state_key: &str) -> Result<UserSta
     Ok(UserState::parse_or_none(&s))
 }
 
+/// Saves the user state to KV with a 30-minute TTL.
+/// The state is JSON-serialized and stored under `state_key`.
 async fn save_state(kv: &worker::kv::KvStore, state_key: &str, state: &UserState) -> Result<()> {
     kv.put(state_key, &serde_json::to_string(state)?)?
         .expiration_ttl(STATE_TTL_SECONDS)
@@ -949,6 +967,8 @@ async fn save_state(kv: &worker::kv::KvStore, state_key: &str, state: &UserState
     Ok(())
 }
 
+/// Deletes the user state from KV and logs the deletion.
+/// Called after a successful item submission to clear the draft state.
 async fn delete_state(kv: &worker::kv::KvStore, state_key: &str, chat_id: i64) -> Result<()> {
     kv.delete(state_key).await?;
     log_event!("info", "state.deleted", "chat_id={}", chat_id);

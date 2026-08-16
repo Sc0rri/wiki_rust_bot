@@ -1,8 +1,12 @@
 use crate::state::PendingItem;
 
+/// Service for parsing user-provided text and generating filesystem names.
+/// Handles URL detection, slug generation, and filename creation for pending items.
 pub struct ParserService;
 
 impl ParserService {
+    /// Checks whether the given text starts with `http://` or `https://`,
+    /// indicating it is a URL. Returns `false` for plain text and other protocols.
     pub fn is_url(text: &str) -> bool {
         text.starts_with("http://") || text.starts_with("https://")
     }

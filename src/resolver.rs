@@ -2,6 +2,14 @@ use crate::state::{KnowledgeType, PendingItem, ResourceProvider};
 use worker::*;
 
 /// Resolves metadata for known providers using their public APIs (no AI).
+///
+/// Currently supported resolutions:
+/// - GitHub repos via the GitHub REST API (description, language, stars, topics)
+/// - YouTube videos via the public oEmbed endpoint (title, author)
+/// - Generic web pages via HTML `<title>` / meta / Open Graph tag extraction
+///
+/// Falls back gracefully (returns `None` / `Ok(None)`) when a provider is
+/// unreachable or has no useful metadata, rather than failing the whole save flow.
 pub struct Resolver;
 
 impl Resolver {
@@ -186,6 +194,8 @@ impl Resolver {
         end
     }
 
+    /// Extracts the text content between an opening and closing tag from HTML,
+    /// e.g. `<title>...</title>`. Case-insensitive.
     fn extract_tag_content(html: &str, tag: &str) -> Option<String> {
         let lower = html.to_lowercase();
         let open_tag = format!("<{}", tag);
@@ -196,12 +206,16 @@ impl Resolver {
         Some(html[after_open..after_open + end_rel].to_string())
     }
 
+    /// Extracts the meta description from HTML, preferring `name="description"`
+    /// then falling back to `property/name="og:description"`. Decodes entities.
     fn extract_meta_description(html: &str) -> Option<String> {
         Self::extract_meta_value(html, "name", "description")
             .or_else(|| Self::extract_meta_value(html, "property", "og:description"))
             .or_else(|| Self::extract_meta_value(html, "name", "og:description"))
     }
 
+    /// Extracts the Open Graph title from HTML, preferring `property="og:title"`
+    /// then `name="og:title"`. Decodes entities.
     fn extract_open_graph_title(html: &str) -> Option<String> {
         Self::extract_meta_value(html, "property", "og:title")
             .or_else(|| Self::extract_meta_value(html, "name", "og:title"))
@@ -236,6 +250,8 @@ impl Resolver {
         None
     }
 
+    /// Extracts the `content` attribute value from a meta tag's opening tag string.
+    /// Handles double-quoted, single-quoted, and bare (unquoted) content values.
     fn extract_meta_content(tag: &str) -> Option<String> {
         let tag_lower = tag.to_lowercase();
         let c_pos = tag_lower.find("content")?;
@@ -261,8 +277,18 @@ impl Resolver {
         }
     }
 
+    /// Decodes common HTML entities in a string.
+    /// Handles `&amp;`, `&quot;`, `&#39;`, `&apos;`, `&lt;`, `&gt;`, `&nbsp;`,
+    /// `&hellip;`, `&copy;`, `&rarr;`, `&rArr;`, and newline/quote (`&#10;`, `&#39;`).
     fn decode_html_entities(s: &str) -> String {
-        s.replace("&amp;", "&")
+        s.replace("&nbsp;", " ")
+            .replace("&hellip;", "…")
+            .replace("&copy;", "©")
+            .replace("&rarr;", "→")
+            .replace("&rArr;", "⇒")
+            .replace("&#10;", "\n")
+            .replace("&#9;", "\t")
+            .replace("&amp;", "&")
             .replace("&quot;", "\"")
             .replace("&#39;", "'")
             .replace("&apos;", "'")
@@ -321,6 +347,19 @@ mod tests {
             "\"quoted\""
         );
     }
+
+    #[test]
+    fn decode_html_entities_should_handle_extra_entities_and_numerics() {
+        assert_eq!(Resolver::decode_html_entities("a&nbsp;b"), "a b");
+        assert_eq!(Resolver::decode_html_entities("&#39;apos&#39;"), "'apos'");
+        assert_eq!(Resolver::decode_html_entities("line&#10;break"), "line\nbreak");
+        assert_eq!(Resolver::decode_html_entities("tab&#9;end"), "tab\tend");
+        assert_eq!(
+            Resolver::decode_html_entities("&hellip;dots&copy;"),
+            "…dots©"
+        );
+    }
+
 #[test]
     fn extract_meta_description_should_handle_single_quoted_content() {
         let html = r#"<meta name='description' content='Сайт про LLM. Зберігає знання'>"#;
