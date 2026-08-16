@@ -157,13 +157,11 @@ impl Resolver {
         };
 
         if resp.status_code() != 200 {
+            crate::log_event!("warn", "resolver.web.bad_status", "url={} status={}", url, resp.status_code());
             return Ok(None);
         }
 
         let html = resp.text().await?;
-        // Title/description are always near the top of <head> — no need to
-        // scan a whole large page. Cut on a UTF-8 char boundary so slicing
-        // a large multi-byte page (e.g. 134KB of Cyrillic dou.ua) can't panic.
         let snippet_len = Self::floor_char_boundary_len(&html, 80_000);
         let snippet = &html[..snippet_len];
 
@@ -174,6 +172,10 @@ impl Resolver {
         let description = Self::extract_meta_description(snippet)
             .map(|d| Self::decode_html_entities(d.trim()))
             .filter(|d| !d.is_empty());
+
+        if title.is_none() {
+            crate::log_event!("warn", "resolver.web.no_title_found", "url={} html_bytes={}", url, html.len());
+        }
 
         Ok(title.map(|t| (t, description)))
     }
