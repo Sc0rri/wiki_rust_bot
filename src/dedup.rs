@@ -47,6 +47,14 @@ impl DedupService {
         )
     }
 
+    /// Builds a KV key for content-hash deduplication. Media archives are
+    /// deduplicated by the SHA-256 of the archived file (see `asset_sha256`),
+    /// not by title — two different caption-less files share the generic
+    /// "PDF note" title, so a title key would wrongly reject the second one.
+    pub fn hash_key(sha256: &str) -> String {
+        format!("hash:{}", sha256)
+    }
+
     /// KV keys are capped at 512 bytes (UTF-8 encoded) by Cloudflare. A title
     /// can be an entire forwarded paragraph (e.g. a long Note), so it must be
     /// truncated to fit — otherwise the PUT fails outright ("KV PUT failed:
@@ -144,5 +152,15 @@ mod tests {
         let long_url = format!("https://example.com/{}", "x".repeat(600));
         let key = DedupService::url_key(&long_url);
         assert!(key.len() <= 512, "key was {} bytes", key.len());
+    }
+
+    #[test]
+    fn hash_key_has_prefix_and_limited_length() {
+        let key = DedupService::hash_key(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        assert!(key.starts_with("hash:"));
+        assert!(key.len() <= 512, "key was {} bytes", key.len());
+        assert_eq!(key.len(), "hash:".len() + 64);
     }
 }

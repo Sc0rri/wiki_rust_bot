@@ -841,7 +841,15 @@ async fn save_and_finish(
     chat_id: i64,
     item: PendingItem,
 ) -> Result<()> {
-    let dedup_key = DedupService::title_key(&item.title);
+    let dedup_key = match item.asset_sha256.as_deref() {
+        // Media items with an archived file: dedupe by file content, not by
+        // title. Caption-less files all share the generic "PDF note"/"Image
+        // note" title, so a title key would wrongly reject a second, different
+        // file as "Already saved". Two identical files still share a SHA-256,
+        // so resending the same document is still caught.
+        Some(sha) => DedupService::hash_key(sha),
+        None => DedupService::title_key(&item.title),
+    };
     if DedupService::is_processed(dedup_kv, &dedup_key).await? {
         TelegramService::send_message(
             bot_token,
