@@ -43,8 +43,12 @@ impl ParserService {
     /// first 20 chars of the title with full Unicode support), so there's no
     /// risk of different items collapsing to the same slug when the title is
     /// non-ASCII — the bug that would otherwise silently lose data.
+    ///
+    /// The id is additionally passed through `sanitize_path_component` as a
+    /// safety net: titles that contain `/` (e.g. GitHub `owner/repo`) must
+    /// never turn the filename into a nested directory under `inbox/pending/`.
     pub fn generate_filename(item: &PendingItem) -> String {
-        format!("{}.yaml", item.id)
+        format!("{}.yaml", crate::state::sanitize_path_component(&item.id))
     }
 
     /// Generates a filename for an asset file (photo/PDF).
@@ -52,9 +56,14 @@ impl ParserService {
     /// Uses the same `item.id` as `generate_filename`, so an asset and its
     /// pending YAML entry are easy to correlate by eye in inbox/. The ID
     /// already includes second-level precision, so collisions are extremely
-    /// unlikely.
+    /// unlikely. The id is sanitized like in `generate_filename` so a `/` in
+    /// the title can never create a nested `inbox/assets/<subdir>/` path.
     pub fn generate_asset_filename(item: &PendingItem, extension: &str) -> String {
-        format!("{}.{}", item.id, extension)
+        format!(
+            "{}.{}",
+            crate::state::sanitize_path_component(&item.id),
+            extension
+        )
     }
 }
 
@@ -108,6 +117,31 @@ mod tests {
         assert!(result.ends_with(".yaml"));
         assert!(!result.contains('/'));
         assert!(result.contains("lord-of-the-rings"));
+    }
+
+    #[test]
+    fn generate_filename_should_flatten_slash_titles() {
+        // Regression: a GitHub owner/repo title used to bake a `/` into the
+        // item id, committing the file into inbox/pending/<owner>/<file>.yaml.
+        let item = PendingItem::new(
+            "andyrewlee/awesome-agent-orchestrators".to_string(),
+            KnowledgeType::Link,
+            0,
+        );
+        let result = ParserService::generate_filename(&item);
+        assert!(!result.contains('/'), "filename was: {}", result);
+        assert!(!result.contains('\\'));
+        assert!(result.ends_with(".yaml"));
+    }
+
+    #[test]
+    fn generate_filename_should_sanitize_foreign_id() {
+        // Defense-in-depth: even if an item id somehow contains a path
+        // separator, the filename must stay a single flat component.
+        let mut item = PendingItem::new("Some Title".to_string(), KnowledgeType::Link, 0);
+        item.id = "20260101120000-parent/child".to_string();
+        let result = ParserService::generate_filename(&item);
+        assert_eq!(result, "20260101120000-parent-child.yaml");
     }
 
     #[test]

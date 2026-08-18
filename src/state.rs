@@ -113,6 +113,35 @@ fn strip_invisible_chars(s: &str) -> String {
         .collect()
 }
 
+/// Replaces characters that are illegal in a Git/GitHub or local filesystem
+/// path component with `-`. Keeps Unicode letters (including Cyrillic) so
+/// non-ASCII titles still produce readable ids, but guarantees the result can
+/// never contain a path separator (`/` or `\`) — a GitHub `owner/repo` title
+/// would otherwise bake a `/` into the item id and commit the file into a
+/// nested `inbox/pending/<owner>/` directory instead of a flat path.
+pub(crate) fn sanitize_path_component(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c == ' '
+                || c == '/'
+                || c == '\\'
+                || c == ':'
+                || c == '*'
+                || c == '?'
+                || c == '"'
+                || c == '<'
+                || c == '>'
+                || c == '|'
+                || c.is_control()
+            {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 impl PendingItem {
     /// Creates a new `PendingItem` with the given title, knowledge type, and chat_id.
     /// Strips invisible characters from the title and generates a unique ID from
@@ -121,17 +150,15 @@ impl PendingItem {
     pub fn new(title: String, knowledge_type: KnowledgeType, chat_id: i64) -> Self {
         let title = strip_invisible_chars(&title);
         let now = chrono::Utc::now();
+        // The id is used verbatim as a file path component (pending YAML,
+        // archive asset, reply file), so every path/illegal character from the
+        // title must be flattened — a `/` in a GitHub `owner/repo` title would
+        // otherwise commit the item into a nested inbox/pending/<owner>/
+        // directory instead of a flat file.
+        let id_fragment =
+            sanitize_path_component(&title.chars().take(20).collect::<String>().to_lowercase());
         Self {
-            id: format!(
-                "{}-{}",
-                now.format("%Y%m%d%H%M%S"),
-                title
-                    .chars()
-                    .take(20)
-                    .collect::<String>()
-                    .to_lowercase()
-                    .replace(' ', "-")
-            ),
+            id: format!("{}-{}", now.format("%Y%m%d%H%M%S"), id_fragment),
             created: now.format("%Y-%m-%d").to_string(),
             source: "telegram".to_string(),
             provider: ResourceProvider::Direct,
@@ -387,5 +414,38 @@ mod tests {
         assert_eq!(item.source, "telegram");
         assert_eq!(item.status, ContentStatus::Backlog);
         assert_eq!(item.chat_id, 12345);
+    }
+
+    #[test]
+    fn pending_item_id_should_flatten_slash_from_github_title() {
+        // Regression: GitHub owner/repo titles ("owner/repo") used to bake a
+        // `/` into the id, committing files into inbox/pending/<owner>/<file>.
+        let item = PendingItem::new(
+            "andyrewlee/awesome-agent-orchestrators".to_string(),
+            KnowledgeType::Link,
+            12345,
+        );
+        assert!(!item.id.contains('/'), "id was: {}", item.id);
+        assert!(!item.id.contains('\\'));
+        assert!(item.id.contains("-andyrewlee-awesome-a"));
+    }
+
+    #[test]
+    fn pending_item_id_should_flatten_slash_from_url_path_title() {
+        // The same bug occurred with URLs whose detected title contains a
+        // slash (e.g. agent_skills/advisor-orchestrator-worker).
+        let item = PendingItem::new(
+            "agent_skills/advisor-orchestrator-worker".to_string(),
+            KnowledgeType::Link,
+            12345,
+        );
+        assert!(!item.id.contains('/'), "id was: {}", item.id);
+        assert!(item.id.ends_with("-agent_skills-advisor"));
+    }
+
+    #[test]
+    fn pending_item_id_should_keep_unicode_letters() {
+        let item = PendingItem::new("Проверка ссылки".to_string(), KnowledgeType::Link, 12345);
+        assert!(item.id.contains("проверка"));
     }
 }
